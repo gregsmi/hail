@@ -27,7 +27,7 @@ AUTHORIZED_USERS = [
     User('konradjk', 'konradk'),
     User('lfrancioli'),
     User('lgruen'),
-    User('mkveerapen'),
+#    User('mkveerapen'),
     User('nawatts'),
     User('patrick-schultz', 'pschultz', [COMPILER_TEAM]),
     User('pwc2', 'pcumming'),
