@@ -2538,7 +2538,7 @@ steps:
       curl -XPOST \
         -i \
         -fsSL \
-        https://api.github.com/orgs/gregsmi/repos \
+        https://api.github.com/user/repos \
         -H "Authorization: token ${TOKEN}" \
         -d "{ \"name\" : \"$REPO_NAME\" }"
 
