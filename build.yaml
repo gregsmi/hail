@@ -2538,7 +2538,7 @@ steps:
       curl -XPOST \
         -i \
         -fsSL \
-        https://api.github.com/orgs/hail-ci-test/repos \
+        https://api.github.com/orgs/gregsmi/repos \
         -H "Authorization: token ${TOKEN}" \
         -d "{ \"name\" : \"$REPO_NAME\" }"
 
@@ -2547,7 +2547,7 @@ steps:
       # destination on successful clone
       set +x
       clone() {
-        tmp_dir=$(mktemp -d) && git clone https://$1@github.com/hail-ci-test/$2.git $tmp_dir && mv $tmp_dir $2
+        tmp_dir=$(mktemp -d) && git clone https://$1@github.com/gregsmi/$2.git $tmp_dir && mv $tmp_dir $2
       }
       typeset -fx clone
       retry clone $TOKEN $REPO_NAME
@@ -2597,7 +2597,7 @@ steps:
           --from-literal=github_context="ci-test" \
           --from-literal=storage_uri="{{ global.test_storage_uri }}" \
           --from-literal=deploy_steps="[]" \
-          --from-literal=watched_branches="[[\"hail-ci-test/ci-test-{{create_ci_test_repo.token}}:master\", true, true]]" \
+          --from-literal=watched_branches="[[\"gregsmi/ci-test-{{create_ci_test_repo.token}}:master\", true, true]]" \
           --save-config --dry-run=client -o yaml \
         | kubectl -n {{ default_ns.name }} apply -f -
     serviceAccount:
@@ -2640,7 +2640,7 @@ steps:
       valueFrom: test_ci_image.image
     script: |
       set -ex
-      export ORGANIZATION=hail-ci-test
+      export ORGANIZATION=gregsmi
       export REPO_NAME=ci-test-"{{ create_ci_test_repo.token }}"
       export NAMESPACE="{{ default_ns.name }}"
       python3 -m pytest --log-cli-level=INFO -s -vv --instafail --durations=50 /test/
@@ -2837,7 +2837,7 @@ steps:
       echo deleting ci-test-{{ create_ci_test_repo.token }}...
       curl -XDELETE \
         -ifsSL \
-        https://api.github.com/repos/hail-ci-test/ci-test-{{ create_ci_test_repo.token }} \
+        https://api.github.com/repos/gregsmi/ci-test-{{ create_ci_test_repo.token }} \
         -H "Authorization: token ${TOKEN}"
     secrets:
       - name: hail-ci-0-1-service-account-key
