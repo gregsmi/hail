@@ -5,8 +5,8 @@ do
     sed "s/@PYTHON_VERSION@/$version/g" Dockerfile > Dockerfile.out
 
     public=hailgenetics/python-dill:$version
-    private=${DOCKER_PREFIX}/python-dill:$version
-    cache=${DOCKER_PREFIX}/python-dill:cache
+    private=${DOCKER_PREFIX}/hailgenetics/python-dill:$version
+    cache=${DOCKER_PREFIX}/hailgenetics/python-dill:cache
 
     DOCKER_BUILDKIT=1 docker build \
         --file Dockerfile.out \
