@@ -94,7 +94,7 @@ importlib-metadata==3.10.1
     #   pre-commit
     #   pytest
     #   virtualenv
-importlib-resources==5.7.1
+importlib-resources==5.9.0
     # via jsonschema
 iniconfig==1.1.1
     # via pytest
@@ -396,7 +396,7 @@ types-requests==2.27.30
     # via -r python/dev/requirements.txt
 types-setuptools==57.4.17
     # via -r python/dev/requirements.txt
-types-six==1.16.15
+types-six==1.16.19
     # via -r python/dev/requirements.txt
 types-tabulate==0.8.9
     # via -r python/dev/requirements.txt
@@ -413,7 +413,7 @@ typing-extensions==4.2.0
     #   jsonschema
     #   mypy
     #   pylint
-urllib3==1.26.9
+urllib3==1.26.12
     # via requests
 virtualenv==20.14.1
     # via pre-commit
