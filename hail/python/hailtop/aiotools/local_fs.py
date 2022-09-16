@@ -43,7 +43,7 @@ class LocalFileListEntry(FileListEntry):
         trailing_slash = "/" if await self.is_dir() else ""
         return f'{self._base_url}{self._entry.name}{trailing_slash}'
 
-    def url_maybe_trailing_slash(self) -> str:
+    async def url_maybe_trailing_slash(self) -> str:
         return f'{self._base_url}{self._entry.name}'
 
     async def is_file(self) -> bool:
@@ -98,6 +98,10 @@ class LocalAsyncFSURL(AsyncFSURL):
     @property
     def path(self) -> str:
         return self._path
+
+    @property
+    def params(self) -> str:
+        return None
 
     @property
     def scheme(self) -> str:

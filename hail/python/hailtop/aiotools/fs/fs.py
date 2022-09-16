@@ -27,9 +27,11 @@ class FileListEntry(abc.ABC):
     async def url(self) -> str:
         pass
 
-    @abc.abstractmethod
-    def url_maybe_trailing_slash(self) -> str:
-        pass
+    async def url_maybe_trailing_slash(self) -> str:
+        return await self.url()
+
+    async def url_with_params(self) -> str:
+        return await self.url()
 
     @abc.abstractmethod
     async def is_file(self) -> bool:
@@ -70,6 +72,11 @@ class AsyncFSURL(abc.ABC):
     @property
     @abc.abstractmethod
     def path(self) -> str:
+        pass
+
+    @property
+    @abc.abstractmethod
+    def params(self) -> str:
         pass
 
     @property
@@ -204,6 +211,7 @@ class AsyncFS(abc.ABC):
 
     async def _remove_doesnt_exist_ok(self, url):
         try:
+            print(f'remove: {url}')
             await self.remove(url)
         except FileNotFoundError:
             pass
@@ -220,7 +228,7 @@ class AsyncFS(abc.ABC):
         async def rm(entry: FileListEntry):
             assert listener is not None
             listener(1)
-            await self._remove_doesnt_exist_ok(await entry.url())
+            await self._remove_doesnt_exist_ok(await entry.url_with_params())
             listener(-1)
 
         try:
