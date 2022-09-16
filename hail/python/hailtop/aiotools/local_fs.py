@@ -111,7 +111,7 @@ class LocalAsyncFSURL(AsyncFSURL):
         return LocalAsyncFSURL(path)
 
     def __str__(self) -> str:
-        return 'file:' + self._path
+        return self._path
 
 
 class TruncatedReadableBinaryIO(BinaryIO):

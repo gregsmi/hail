@@ -286,7 +286,8 @@ class AzureAsyncFSURL(AsyncFSURL):
         return AzureAsyncFSURL(self._account, self._container, path, self._params)
 
     def __str__(self) -> str:
-        return f'hail-az://{self._account}/{self._container}/{self._path}'
+        base = f'hail-az://{self._account}/{self._container}/{self._path}'
+        return base if not self._params else f'{base}?{self._params}' 
 
 
 class AzureAsyncFS(AsyncFS):
