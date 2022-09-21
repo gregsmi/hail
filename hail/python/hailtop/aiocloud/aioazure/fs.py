@@ -1,24 +1,33 @@
-from typing import Any, AsyncContextManager, AsyncIterator, Dict, List, Optional, Set, Tuple, Type, Union
-from types import TracebackType
-
-import re
 import asyncio
-import secrets
 import logging
+import re
+import secrets
+from datetime import datetime, timedelta
+from types import TracebackType
+from typing import Any, AsyncContextManager, AsyncIterator, Dict, List, Optional, Set, Tuple, Type, Union
 
-from azure.storage.blob import BlobProperties
-from azure.storage.blob.aio import BlobClient, ContainerClient, BlobServiceClient, StorageStreamDownloader
-from azure.storage.blob.aio._list_blobs_helper import BlobPrefix
 import azure.core.exceptions
+from azure.mgmt.storage.aio import StorageManagementClient
+from azure.storage.blob import BlobProperties, ResourceTypes, generate_account_sas
+from azure.storage.blob.aio import BlobClient, BlobServiceClient, ContainerClient, StorageStreamDownloader
+from azure.storage.blob.aio._list_blobs_helper import BlobPrefix
 
-from hailtop.utils import retry_transient_errors, flatten
 from hailtop.aiotools import WriteBuffer
-from hailtop.aiotools.fs import (AsyncFS, AsyncFSURL, AsyncFSFactory, ReadableStream,
-                                 WritableStream, MultiPartCreate, FileListEntry, FileStatus,
-                                 FileAndDirectoryError, UnexpectedEOFError)
+from hailtop.aiotools.fs import (
+    AsyncFS,
+    AsyncFSFactory,
+    AsyncFSURL,
+    FileAndDirectoryError,
+    FileListEntry,
+    FileStatus,
+    MultiPartCreate,
+    ReadableStream,
+    UnexpectedEOFError,
+    WritableStream,
+)
+from hailtop.utils import flatten, retry_transient_errors
 
 from .credentials import AzureCredentials
-
 
 logger = logging.getLogger("azure.core.pipeline.policies.http_logging_policy")
 logger.setLevel(logging.WARNING)
@@ -312,6 +321,26 @@ class AzureAsyncFS(AsyncFS):
     def parse_url(self, url: str) -> AzureAsyncFSURL:
         return AzureAsyncFSURL(*self.get_account_container_and_name(url))
 
+    async def generate_sas_token(
+        self,
+        subscription_id: str,
+        resource_group: str,
+        account: str,
+        permissions: str = "rw",
+        valid_interval: timedelta = timedelta(hours=1)
+    ) -> str:
+        mgmt_client = StorageManagementClient(self._credential, subscription_id)
+        storage_keys = await mgmt_client.storage_accounts.list_keys(resource_group, account)
+        storage_key = storage_keys.keys[0].value
+
+        token = generate_account_sas(
+            account, 
+            storage_key, 
+            resource_types=ResourceTypes(container=True, object=True),
+            permission=permissions,
+            expiry=datetime.utcnow() + valid_interval)
+        return token
+
     @staticmethod
     def get_account_container_and_name(url: str) -> Tuple[str, str, str, str]:
         colon_index = url.find(':')
@@ -398,9 +427,9 @@ class AzureAsyncFS(AsyncFS):
 
     async def isdir(self, url: str) -> bool:
         _, _, name, _ = self.get_account_container_and_name(url)
-        assert not name or name.endswith('/'), name
+        dir_name = name if not name or name.endswith('/') else name + '/'
         client = self.get_container_client(url)
-        async for _ in client.walk_blobs(name_starts_with=name,
+        async for _ in client.walk_blobs(name_starts_with=dir_name,
                                          include=['metadata'],
                                          delimiter='/'):
             return True
@@ -499,7 +528,7 @@ class AzureAsyncFS(AsyncFS):
             self._credential = None
 
         if self._blob_service_clients:
-            await asyncio.wait([client.close() for client in self._blob_service_clients.values()])
+            await asyncio.wait([asyncio.create_task(client.close()) for client in self._blob_service_clients.values()])
 
 
 class AzureAsyncFSFactory(AsyncFSFactory[AzureAsyncFS]):

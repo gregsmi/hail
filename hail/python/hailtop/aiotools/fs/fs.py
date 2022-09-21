@@ -89,7 +89,9 @@ class AsyncFSURL(abc.ABC):
         pass
 
     def with_new_path_component(self, new_path_component) -> 'AsyncFSURL':
-        return self.with_path(self.path + '/' + new_path_component)
+        prefix = self.path if self.path.endswith('/') else self.path + '/'
+        suffix = new_path_component[1:] if new_path_component.startswith('/') else new_path_component
+        return self.with_path(prefix + suffix)
 
     @abc.abstractmethod
     def __str__(self) -> str:
