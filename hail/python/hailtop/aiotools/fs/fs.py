@@ -213,7 +213,6 @@ class AsyncFS(abc.ABC):
 
     async def _remove_doesnt_exist_ok(self, url):
         try:
-            print(f'remove: {url}')
             await self.remove(url)
         except FileNotFoundError:
             pass
