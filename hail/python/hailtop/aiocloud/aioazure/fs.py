@@ -285,7 +285,7 @@ class AzureAsyncFSURL(AsyncFSURL):
 
     @property
     def query(self) -> str:
-        return self._params
+        return self._query
 
     @property
     def scheme(self) -> str:
