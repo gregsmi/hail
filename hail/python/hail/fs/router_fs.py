@@ -252,9 +252,9 @@ class RouterFS(FS):
                         *,
                         error_when_file_and_directory: bool = True,
                         _max_simultaneous_files: int = 50) -> List[StatResult]:
-        async def ls_no_glob(*parts, params) -> List[StatResult]:
+        async def ls_no_glob(*parts, query) -> List[StatResult]:
             try:
-                path = '/'.join(parts) + f'?{params}' if params else '/'.join(parts)
+                path = '/'.join(parts) + f'?{query}' if query else '/'.join(parts)
                 return await self._ls_no_glob(path, error_when_file_and_directory, _max_simultaneous_files)
             except FileNotFoundError:
                 return []
@@ -293,14 +293,14 @@ class RouterFS(FS):
             cumulative_prefixes = [
                 stat.path
                 for cumulative_prefix in cumulative_prefixes
-                for stat in await ls_no_glob(cumulative_prefix, *intervening_components, params=url.params)
+                for stat in await ls_no_glob(cumulative_prefix, *intervening_components, query=url.query)
                 if fnmatch.fnmatch(stat.path, '/'.join([cumulative_prefix, *intervening_components, single_component_glob_pattern]))
             ]
 
         found_stats = [
             stat
             for cumulative_prefix in cumulative_prefixes
-            for stat in await ls_no_glob(cumulative_prefix, suffix_components, params=url.params)
+            for stat in await ls_no_glob(cumulative_prefix, suffix_components, query=url.query)
         ]
 
         if len(glob_components) == 0 and len(found_stats) == 0:

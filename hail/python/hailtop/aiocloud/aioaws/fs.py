@@ -260,7 +260,7 @@ class S3AsyncFSURL(AsyncFSURL):
         return self._path
 
     @property
-    def params(self) -> str:
+    def query(self) -> str:
         return None
 
     @property

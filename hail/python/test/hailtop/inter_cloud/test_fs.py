@@ -14,7 +14,7 @@ from hailtop.aiocloud.aioaws import S3AsyncFS
 from hailtop.aiocloud.aioazure import AzureAsyncFS
 from hailtop.aiocloud.aiogoogle import GoogleStorageAsyncFS
 
-@pytest.fixture(params=['file', 'gs', 's3', 'hail-az', 'router/file', 'router/gs', 'router/s3', 'router/hail-az', 'sas/hail-az'])
+@pytest.fixture(params=['file', 'gs', 's3', 'hail-az', 'router/file', 'router/gs', 'router/s3', 'router/hail-az']) # 'sas/hail-az'
 async def filesystem(request) -> AsyncIterator[Tuple[asyncio.Semaphore, AsyncFS, AsyncFSURL]]:
     token = secret_alnum_string()
 
@@ -523,7 +523,7 @@ async def test_listfiles(filesystem: Tuple[asyncio.Semaphore, AsyncFS, AsyncFSUR
     await fs.touch(c)
 
     async def listfiles(dir, recursive):
-        return {(await entry.url_with_params(), await entry.is_file()) async for entry in await fs.listfiles(dir, recursive)}
+        return {(await entry.url_with_query(), await entry.is_file()) async for entry in await fs.listfiles(dir, recursive)}
 
     foo = str(base.with_new_path_component('foo/'))
     assert await listfiles(foo, recursive=True) == {(a, True), (c, True)}

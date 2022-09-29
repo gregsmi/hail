@@ -225,12 +225,12 @@ class AzureReadableStream(ReadableStream):
 
 
 class AzureFileListEntry(FileListEntry):
-    def __init__(self, account: str, container: str, name: str, blob_props: Optional[BlobProperties], params: str):
+    def __init__(self, account: str, container: str, name: str, blob_props: Optional[BlobProperties], query: str):
         self._account = account
         self._container = container
         self._name = name
         self._blob_props = blob_props
-        self._params = params
+        self._query = query
         self._status: Optional[AzureFileStatus] = None
 
     def name(self) -> str:
@@ -239,9 +239,9 @@ class AzureFileListEntry(FileListEntry):
     async def url(self) -> str:
         return f'hail-az://{self._account}/{self._container}/{self._name}'
 
-    async def url_with_params(self) -> str:
+    async def url_with_query(self) -> str:
         base = f'hail-az://{self._account}/{self._container}/{self._name}'
-        return base if not self._params else f'{base}?{self._params}' 
+        return base if not self._query else f'{base}?{self._query}' 
 
     async def is_file(self) -> bool:
         return self._blob_props is not None
@@ -269,11 +269,11 @@ class AzureFileStatus(FileStatus):
 
 
 class AzureAsyncFSURL(AsyncFSURL):
-    def __init__(self, account: str, container: str, path: str, params: str):
+    def __init__(self, account: str, container: str, path: str, query: str):
         self._account = account
         self._container = container
         self._path = path
-        self._params = params
+        self._query = query
 
     @property
     def bucket_parts(self) -> List[str]:
@@ -284,7 +284,7 @@ class AzureAsyncFSURL(AsyncFSURL):
         return self._path
 
     @property
-    def params(self) -> str:
+    def query(self) -> str:
         return self._params
 
     @property
@@ -292,11 +292,11 @@ class AzureAsyncFSURL(AsyncFSURL):
         return 'hail-az'
 
     def with_path(self, path) -> 'AzureAsyncFSURL':
-        return AzureAsyncFSURL(self._account, self._container, path, self._params)
+        return AzureAsyncFSURL(self._account, self._container, path, self._query)
 
     def __str__(self) -> str:
         base = f'hail-az://{self._account}/{self._container}/{self._path}'
-        return base if not self._params else f'{base}?{self._params}' 
+        return base if not self._query else f'{base}?{self._query}' 
 
 
 class AzureAsyncFS(AsyncFS):
@@ -319,7 +319,7 @@ class AzureAsyncFS(AsyncFS):
         self._blob_service_clients: Dict[Tuple[str, Union[AzureCredentials, str]], BlobServiceClient] = {}
 
     def parse_url(self, url: str) -> AzureAsyncFSURL:
-        return AzureAsyncFSURL(*self.get_account_container_and_name(url))
+        return AzureAsyncFSURL(*self.get_url_parts(url))
 
     async def generate_sas_token(
         self,
@@ -342,7 +342,7 @@ class AzureAsyncFS(AsyncFS):
         return token
 
     @staticmethod
-    def get_account_container_and_name(url: str) -> Tuple[str, str, str, str]:
+    def get_url_parts(url: str) -> Tuple[str, str, str, str]:
         colon_index = url.find(':')
         if colon_index == -1:
             raise ValueError(f'invalid URL: {url}')
@@ -382,12 +382,12 @@ class AzureAsyncFS(AsyncFS):
         return self._blob_service_clients[(account, credential)]
 
     def get_blob_client(self, url: str) -> BlobClient:
-        account, container, name, token = AzureAsyncFS.get_account_container_and_name(url)
+        account, container, name, token = AzureAsyncFS.get_url_parts(url)
         blob_service_client = self.get_blob_service_client(account, token)
         return blob_service_client.get_blob_client(container, name)
 
     def get_container_client(self, url: str) -> ContainerClient:
-        account, container, _, token  = AzureAsyncFS.get_account_container_and_name(url)
+        account, container, _, token  = AzureAsyncFS.get_url_parts(url)
         blob_service_client = self.get_blob_service_client(account, token)
         return blob_service_client.get_container_client(container)
 
@@ -417,7 +417,7 @@ class AzureAsyncFS(AsyncFS):
         return AzureMultiPartCreate(sema, client, num_parts)
 
     async def isfile(self, url: str) -> bool:
-        _, _, name, _ = self.get_account_container_and_name(url)
+        _, _, name, _ = self.get_url_parts(url)
         # if name is empty, get_object_metadata behaves like list objects
         # the urls are the same modulo the object name
         if not name:
@@ -426,7 +426,7 @@ class AzureAsyncFS(AsyncFS):
         return await self.get_blob_client(url).exists()
 
     async def isdir(self, url: str) -> bool:
-        _, _, name, _ = self.get_account_container_and_name(url)
+        _, _, name, _ = self.get_url_parts(url)
         dir_name = name if not name or name.endswith('/') else name + '/'
         client = self.get_container_client(url)
         async for _ in client.walk_blobs(name_starts_with=dir_name,
@@ -472,7 +472,7 @@ class AzureAsyncFS(AsyncFS):
                         recursive: bool = False,
                         exclude_trailing_slash_files: bool = True
                         ) -> AsyncIterator[FileListEntry]:
-        _, _, name, token = self.get_account_container_and_name(url)
+        _, _, name, token = self.get_url_parts(url)
         if name and not name.endswith('/'):
             name = f'{name}/'
 

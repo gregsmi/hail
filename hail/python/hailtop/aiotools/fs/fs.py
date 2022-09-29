@@ -30,7 +30,7 @@ class FileListEntry(abc.ABC):
     async def url_maybe_trailing_slash(self) -> str:
         return await self.url()
 
-    async def url_with_params(self) -> str:
+    async def url_with_query(self) -> str:
         return await self.url()
 
     @abc.abstractmethod
@@ -76,7 +76,7 @@ class AsyncFSURL(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def params(self) -> str:
+    def query(self) -> str:
         pass
 
     @property
@@ -229,7 +229,7 @@ class AsyncFS(abc.ABC):
         async def rm(entry: FileListEntry):
             assert listener is not None
             listener(1)
-            await self._remove_doesnt_exist_ok(await entry.url_with_params())
+            await self._remove_doesnt_exist_ok(await entry.url_with_query())
             listener(-1)
 
         try:
