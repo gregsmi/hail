@@ -241,7 +241,7 @@ class AzureFileListEntry(FileListEntry):
 
     async def url_with_query(self) -> str:
         base = f'hail-az://{self._account}/{self._container}/{self._name}'
-        return base if not self._query else f'{base}?{self._query}' 
+        return base if not self._query else f'{base}?{self._query}'
 
     async def is_file(self) -> bool:
         return self._blob_props is not None
@@ -296,7 +296,7 @@ class AzureAsyncFSURL(AsyncFSURL):
 
     def __str__(self) -> str:
         base = f'hail-az://{self._account}/{self._container}/{self._path}'
-        return base if not self._query else f'{base}?{self._query}' 
+        return base if not self._query else f'{base}?{self._query}'
 
 
 class AzureAsyncFS(AsyncFS):
@@ -334,8 +334,8 @@ class AzureAsyncFS(AsyncFS):
         storage_key = storage_keys.keys[0].value
 
         token = generate_account_sas(
-            account, 
-            storage_key, 
+            account,
+            storage_key,
             resource_types=ResourceTypes(container=True, object=True),
             permission=permissions,
             expiry=datetime.utcnow() + valid_interval)
@@ -378,7 +378,7 @@ class AzureAsyncFS(AsyncFS):
         credential = token if token else self._credential
         if (account, credential) not in self._blob_service_clients:
             account_url = f'https://{account}.blob.core.windows.net'
-            self._blob_service_clients[(account, credential)] =  BlobServiceClient(account_url, credential=credential)
+            self._blob_service_clients[(account, credential)] = BlobServiceClient(account_url, credential=credential)
         return self._blob_service_clients[(account, credential)]
 
     def get_blob_client(self, url: str) -> BlobClient:
@@ -387,7 +387,7 @@ class AzureAsyncFS(AsyncFS):
         return blob_service_client.get_blob_client(container, name)
 
     def get_container_client(self, url: str) -> ContainerClient:
-        account, container, _, token  = AzureAsyncFS.get_url_parts(url)
+        account, container, _, token = AzureAsyncFS.get_url_parts(url)
         blob_service_client = self.get_blob_service_client(account, token)
         return blob_service_client.get_container_client(container)
 
