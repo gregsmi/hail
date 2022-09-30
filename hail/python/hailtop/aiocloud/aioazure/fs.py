@@ -284,7 +284,7 @@ class AzureAsyncFSURL(AsyncFSURL):
         return self._path
 
     @property
-    def query(self) -> str:
+    def query(self) -> Optional[str]:
         return self._query
 
     @property
