@@ -342,7 +342,7 @@ class AzureAsyncFS(AsyncFS):
         return token
 
     @staticmethod
-    def get_url_parts(url: str) -> Tuple[str, str, str, Optional[str]]:
+    def get_url_parts(url: str) -> Tuple[str, str, str, str]:
         colon_index = url.find(':')
         if colon_index == -1:
             raise ValueError(f'invalid URL: {url}')
@@ -370,7 +370,7 @@ class AzureAsyncFS(AsyncFS):
             assert name[0] == '/'
             name = name[1:]
 
-        token = None
+        token = ''
         # Look for a terminating SAS token.
         query_index = name.rfind('?')
         if query_index != -1:
