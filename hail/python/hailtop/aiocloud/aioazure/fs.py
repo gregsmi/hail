@@ -342,7 +342,7 @@ class AzureAsyncFS(AsyncFS):
         return token
 
     @staticmethod
-    def get_url_parts(url: str) -> Tuple[str, str, str, str]:
+    def get_url_parts(url: str) -> Tuple[str, str, str, Optional[str]]:
         colon_index = url.find(':')
         if colon_index == -1:
             raise ValueError(f'invalid URL: {url}')
