@@ -805,8 +805,8 @@ WHERE batch_updates.batch_id = %s AND batch_updates.update_id = %s AND user = %s
 
         if spec['process']['type'] == 'jvm':
             jvm_requested_cpu = parse_cpu_in_mcpu(resources.get('cpu', BATCH_JOB_DEFAULT_CPU))
-            if 'cpu' in resources and jvm_requested_cpu not in (1000, 8000):
-                raise web.HTTPBadRequest(reason='invalid cpu for jvm jobs. must be 1 or 8')
+            if 'cpu' in resources and jvm_requested_cpu not in (1000, 2000, 4000, 8000):
+                raise web.HTTPBadRequest(reason='invalid cpu for jvm jobs. must be 1, 2, 4, or 8')
             if 'memory' in resources and resources['memory'] == 'lowmem':
                 raise web.HTTPBadRequest(reason='jvm jobs cannot be on lowmem machines')
             if 'storage' in resources:
@@ -1301,7 +1301,7 @@ async def update_batch_fast(request, userdata):
         await _create_jobs(userdata, bunch, batch_id, update_id, app)
     except web.HTTPBadRequest as e:
         if f'update {update_id} is already committed' == e.reason:
-            return web.json_response({'id': batch_id, 'start_job_id': start_job_id})
+            return web.json_response({'update_id': update_id, 'start_job_id': start_job_id})
         raise
     await _commit_update(app, batch_id, update_id, user, db)
     return web.json_response({'update_id': update_id, 'start_job_id': start_job_id})

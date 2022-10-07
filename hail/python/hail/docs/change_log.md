@@ -24,6 +24,47 @@ an earlier version of Hail to read files written in a later version.
 
 ---
 
+## Version 0.2.102
+
+Released 2022-10-06
+
+### New Features
+
+- (hail#12218) Missing values are now supported in primitive columns in `Table.to_pandas`.
+- (hail#12254) Cross-product-style legends for data groups have been replaced with factored ones (consistent with `ggplot2`'s implementation) for `hail.ggplot.geom_point`, and support has been added for custom legend group labels.
+- (hail#12268) `VariantDataset` now implements `union_rows` for combining datasets with the same samples but disjoint variants.
+
+### Bug Fixes
+
+- (hail#12278) Fixed bug made more likely by 0.2.101 in which Hail errors when interacting with a NumPy integer or floating point type.
+- (hail#12277) Fixed bug in reading tables/matrixtables with partition intervals that led to error or segfault.
+
+---
+
+## Version 0.2.101
+
+Released 2022-10-04
+
+### New Features
+
+- (hail#12218) Support missing values in primitive columns in `Table.to_pandas`.
+- (hail#12195) Add a `impute_sex_chr_ploidy_from_interval_coverage` to impute sex ploidy directly from a coverage MT.
+- (hail#12222) Query-on-Batch pipelines now add worker jobs to the same batch as the driver
+job instead of producing a new batch per stage.
+- (hail#12244) Added support for custom labels for per-group legends to `hail.ggplot.geom_point` via the
+`legend_format` keyword argument
+
+### Deprecations
+
+- (hail#12230) The python-dill Batch images in `gcr.io/hail-vdc` are no longer supported.
+Use `hailgenetics/python-dill` instead.
+
+### Bug fixes
+
+- (hail#12215) Fix search bar in the Hail Batch documentation.
+
+---
+
 ## Version 0.2.100
 
 Released 2022-09-23
@@ -222,7 +263,7 @@ Release 2022-03-11
 
 ### Critical BlockMatrix from_numpy correctness bug
 
-- (hail#11555) `BlockMatrix.from_numpy` did not work correctly. Version 1.0 of org.scalanlp.breeze, a dependency of Apache Spark 
+- (hail#11555) `BlockMatrix.from_numpy` did not work correctly. Version 1.0 of org.scalanlp.breeze, a dependency of Apache Spark
 that hail also depends on, has a correctness bug that results in BlockMatrices that repeat the top left block of the block
 matrix for every block. This affected anyone running Spark 3.0.x or 3.1.x.
 
@@ -272,7 +313,7 @@ Release 2022-02-25
 ### Bug fixes
 
 - (hail#11374) Fixed bug where certain pipelines that read in PLINK files would give assertion error.
-- (hail#11401) Fixed bug where `from_pandas` didn't support missing ints. 
+- (hail#11401) Fixed bug where `from_pandas` didn't support missing ints.
 
 ### Performance improvements
 

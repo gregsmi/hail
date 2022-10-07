@@ -952,6 +952,22 @@ class Tests(unittest.TestCase):
         self.assertEqual(t2.n_partitions(), 3)
         self.assertTrue(t1.filter((t1.idx >= 150) & (t1.idx < 500))._same(t2))
 
+        t2 = hl.read_table(f, _intervals=[
+            hl.Interval(start=150, end=250, includes_start=False, includes_end=True),
+            hl.Interval(start=250, end=500, includes_start=False, includes_end=True),
+        ], _create_row_uids=True)
+        self.assertEqual(t2.n_partitions(), 2)
+        self.assertEqual(t2.count(), 350)
+        self.assertEqual(t2._force_count(), 350)
+        self.assertTrue(t1.filter((t1.idx > 150) & (t1.idx <= 500))._same(t2))
+
+        t2 = hl.read_table(f, _intervals=[
+            hl.Interval(start=150, end=250, includes_start=False, includes_end=True),
+            hl.Interval(start=250, end=500, includes_start=False, includes_end=True),
+        ], _filter_intervals=True, _create_row_uids=True)
+        self.assertEqual(t2.n_partitions(), 3)
+        self.assertTrue(t1.filter((t1.idx > 150) & (t1.idx <= 500))._same(t2))
+
     def test_order_by_parsing(self):
         hl.utils.range_table(1).annotate(**{'a b c' : 5}).order_by('a b c')._force_count()
 
@@ -1769,6 +1785,36 @@ def test_read_partitions_with_missing_key():
     assert hl.read_table(path, _n_partitions=10).n_partitions() == 1  # one key => one partition
 
 
+def test_interval_filter_partitions():
+    ht = hl.utils.range_table(100, 3)
+    path = new_temp_file()
+    ht.write(path)
+    intervals = [
+        hl.Interval(hl.Struct(idx=5), hl.Struct(idx=10)),
+        hl.Interval(hl.Struct(idx=12), hl.Struct(idx=13)),
+        hl.Interval(hl.Struct(idx=15), hl.Struct(idx=17)),
+        hl.Interval(hl.Struct(idx=19), hl.Struct(idx=20))
+    ]
+    assert hl.read_table(path, _intervals=intervals, _filter_intervals = True).n_partitions() == 1
+
+    intervals = [
+        hl.Interval(hl.Struct(idx=5), hl.Struct(idx=10)),
+        hl.Interval(hl.Struct(idx=12), hl.Struct(idx=13)),
+        hl.Interval(hl.Struct(idx=15), hl.Struct(idx=17)),
+
+        hl.Interval(hl.Struct(idx=45), hl.Struct(idx=50)),
+        hl.Interval(hl.Struct(idx=52), hl.Struct(idx=53)),
+        hl.Interval(hl.Struct(idx=55), hl.Struct(idx=57)),
+
+        hl.Interval(hl.Struct(idx=75), hl.Struct(idx=80)),
+        hl.Interval(hl.Struct(idx=82), hl.Struct(idx=83)),
+        hl.Interval(hl.Struct(idx=85), hl.Struct(idx=87)),
+    ]
+
+    assert hl.read_table(path, _intervals=intervals, _filter_intervals = True).n_partitions() == 3
+
+
+
 def test_grouped_flatmap_streams():
     ht = hl.import_vcf(resource('sample.vcf')).rows()
     ht = ht.annotate(x=hl.str(ht.locus))  # add a map node
@@ -1883,6 +1929,32 @@ def test_to_pandas_nd_array():
 
     df_from_python = pd.DataFrame(python_data)
     pd.testing.assert_frame_equal(df_from_hail, df_from_python)
+
+
+def test_literal_of_numpy_int64():
+    t = hl.utils.range_table(10)
+    x = t.key_by(idx=hl.int64(t.idx)).to_pandas().idx.tolist()
+    hl.eval(hl.literal(x))
+
+
+def test_literal_of_numpy_int32():
+    t = hl.utils.range_table(10)
+    x = t.key_by(idx=t.idx).to_pandas().idx.tolist()
+    hl.eval(hl.literal(x))
+
+
+def test_literal_of_pandas_NA_and_numpy_int64():
+    import hail as hl
+    t = hl.utils.range_table(10)
+    x = t.key_by(idx=hl.or_missing(t.idx == 5, hl.int64(t.idx))).to_pandas().idx.tolist()
+    hl.eval(hl.literal(x))
+
+
+def test_literal_of_pandas_NA_and_numpy_int32():
+    import hail as hl
+    t = hl.utils.range_table(10)
+    x = t.key_by(idx=hl.or_missing(t.idx == 5, t.idx)).to_pandas().idx.tolist()
+    hl.eval(hl.literal(x))
 
 
 def test_write_many():
