@@ -375,7 +375,7 @@ class AzureAsyncFS(AsyncFS):
         query_index = name.rfind('?')
         if query_index != -1:
             query_string = name[query_index + 1:]
-            # We will accept it as a token string if it has at least 1 initial key-value pair of the form 'k=v'.
+            # We will accept it as a token string if it begins with at least 1 key-value pair of the form 'k=v'.
             if len(list(filter(str.strip, query_string.split('&')[0].split('=')))) == 2:
                 name = name[:query_index]
                 token = query_string
