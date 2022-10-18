@@ -1348,6 +1348,11 @@ steps:
       python3 -m pip install --no-dependencies hail-*-py3-none-any.whl
       mkdir -p /io/tmp
 
+      # The test should use the test credentials, not CI's credentials
+      sed -i 's/gsa-key/test-gsa-key/g' ${SPARK_HOME}/conf/core-site.xml
+      export GOOGLE_APPLICATION_CREDENTIALS=/test-gsa-key/key.json
+
+      export HAIL_CLOUD={{ global.cloud }}
       export HAIL_TEST_STORAGE_URI=/io/tmp/
       export HAIL_TEST_RESOURCES_DIR=./resources
       export HAIL_DOCTEST_DATA_DIR=./data
@@ -1454,11 +1459,10 @@ steps:
 
       # dev deploy elides the hail-is remote, add it and retrieve the tags
       git remote add hail-is https://github.com/hail-is/hail.git
-      git fetch hail-is
 
       export HAIL_PIP_VERSION=$(cat hail/python/hail/hail_pip_version)
 
-      if git ls-remote --exit-code --tags origin $HAIL_PIP_VERSION
+      if git ls-remote --exit-code --tags hail-is $HAIL_PIP_VERSION
       then
         # In this case, we want to get the docs from Google Storage.
         python3 -m hailtop.aiotools.copy 'null' '[
@@ -1860,6 +1864,9 @@ steps:
       - name: add-frozen-mode
         script: /io/sql/add-frozen-mode.sql
         online: true
+      - name: active-namespaces
+        script: /io/sql/active-namespaces.sql
+        online: true
     inputs:
       - from: /repo/ci/sql
         to: /io/sql
@@ -2048,6 +2055,9 @@ steps:
       - name: add-commit-updates
         script: /io/sql/add-commit-updates.sql
         online: true
+      - name: add-job-regions
+        script: /io/sql/add-job-regions.sql
+        online: true
     inputs:
       - from: /repo/batch/sql
         to: /io/sql
@@ -2213,6 +2223,7 @@ steps:
 
       cd /io/repo/hail/python
 
+      export HAIL_CLOUD={{ global.cloud }}
       export HAIL_TEST_STORAGE_URI={{ global.test_storage_uri }}/{{ token }}
       export HAIL_TEST_RESOURCES_DIR="{{ global.test_storage_uri }}/{{ upload_test_resources_to_blob_storage.token }}/test/resources/"
       export HAIL_DOCTEST_DATA_DIR="{{ global.test_storage_uri }}/{{ upload_test_resources_to_blob_storage.token }}/doctest/data/"
@@ -2375,6 +2386,7 @@ steps:
       export HAIL_DOMAIN="{{ global.domain }}"
       hailctl config set batch/remote_tmpdir {{ global.test_storage_uri }}/batch/
       python3 -m pytest \
+              --asyncio-mode=auto \
               --log-date-format="%Y-%m-%dT%H:%M:%S" \
               --log-format="%(asctime)s %(levelname)s %(name)s %(filename)s:%(lineno)d:%(funcName)s %(message)s" \
               --log-cli-level=INFO \
