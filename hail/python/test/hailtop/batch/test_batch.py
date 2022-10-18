@@ -16,13 +16,14 @@ from hailtop.utils import grouped, async_to_blocking
 from hailtop.config import get_user_config
 from hailtop.batch.utils import concatenate
 from hailtop.aiotools.router_fs import RouterAsyncFS
-
-from ..utils import skip_in_azure
+from hailtop.test_utils import skip_in_azure
 
 
 DOCKER_ROOT_IMAGE = os.environ['DOCKER_ROOT_IMAGE']
 PYTHON_DILL_IMAGE = 'hailgenetics/python-dill:3.7-slim'
 HAIL_GENETICS_HAIL_IMAGE = os.environ['HAIL_GENETICS_HAIL_IMAGE']
+CLOUD = os.environ['HAIL_CLOUD']
+
 
 class LocalTests(unittest.TestCase):
     def batch(self, requester_pays_project=None):
@@ -960,3 +961,13 @@ class ServiceTests(unittest.TestCase):
         assert batch_status['state'] == 'success', str((batch_status, batch.debug_info()))
         job_log_2 = batch.get_job_log(2)
         assert job_log_2['main'] == "6\n", str((job_log_2, batch.debug_info()))
+
+    def test_specify_job_region(self):
+        b = self.batch(cancel_after_n_failures=1)
+        j = b.new_job('region')
+        possible_regions = self.backend.supported_regions()
+        j.regions(possible_regions)
+        j.command('true')
+        res = b.run()
+        res_status = res.status()
+        assert res_status['state'] == 'success', str((res_status, res.debug_info()))
