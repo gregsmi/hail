@@ -72,7 +72,7 @@ from ..file_store import FileStore
 from ..globals import BATCH_FORMAT_VERSION, HTTP_CLIENT_MAX_SIZE
 from ..inst_coll_config import InstanceCollectionConfigs
 from ..spec_writer import SpecWriter
-from ..utils import query_billing_projects, unavailable_if_frozen
+from ..utils import query_billing_projects, regions_to_bits_rep, unavailable_if_frozen
 from .validate import ValidationError, validate_and_clean_jobs, validate_batch, validate_batch_update
 
 # import uvloop
@@ -178,6 +178,12 @@ async def get_healthcheck(request):  # pylint: disable=W0613
 @routes.get('/api/v1alpha/version')
 async def rest_get_version(request):  # pylint: disable=W0613
     return web.Response(text=version())
+
+
+@routes.get('/api/v1alpha/supported_regions')
+@auth.rest_authenticated_users_only
+async def rest_get_supported_regions(request, userdata):  # pylint: disable=unused-argument
+    return web.json_response(list(request.app['regions'].keys()))
 
 
 async def _handle_ui_error(session, f, *args, **kwargs):
@@ -893,6 +899,22 @@ WHERE batch_updates.batch_id = %s AND batch_updates.update_id = %s AND user = %s
         resources['storage_gib'] = storage_gib
         resources['preemptible'] = preemptible
 
+        regions = spec.get('regions')
+        if regions is not None:
+            valid_regions = set(app['regions'].keys())
+            invalid_user_regions = set(regions).difference(valid_regions)
+            if invalid_user_regions:
+                raise web.HTTPBadRequest(
+                    reason=f'invalid regions specified: {invalid_user_regions}. Choose from {valid_regions}'
+                )
+            if len(regions) == 0:
+                raise web.HTTPBadRequest(reason='regions must not be an empty array')
+            n_regions = len(regions)
+            regions_bits_rep = regions_to_bits_rep(regions, app['regions'])
+        else:
+            n_regions = None
+            regions_bits_rep = None
+
         secrets = spec.get('secrets')
         if not secrets:
             secrets = []
@@ -996,6 +1018,8 @@ WHERE batch_updates.batch_id = %s AND batch_updates.update_id = %s AND user = %s
                 cores_mcpu,
                 len(parent_ids),
                 inst_coll_name,
+                n_regions,
+                regions_bits_rep,
             )
         )
 
@@ -1017,15 +1041,15 @@ WHERE batch_updates.batch_id = %s AND batch_updates.update_id = %s AND user = %s
             try:
                 await tx.execute_many(
                     '''
-INSERT INTO jobs (batch_id, job_id, update_id, state, spec, always_run, cores_mcpu, n_pending_parents, inst_coll)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+INSERT INTO jobs (batch_id, job_id, update_id, state, spec, always_run, cores_mcpu, n_pending_parents, inst_coll, n_regions, regions_bits_rep)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
 ''',
                     jobs_args,
                 )
             except pymysql.err.IntegrityError as err:
                 # 1062 ER_DUP_ENTRY https://dev.mysql.com/doc/refman/5.7/en/server-error-reference.html#error_er_dup_entry
                 if err.args[0] == 1062:
-                    log.info(f'bunch containing job {(batch_id, jobs_args[0][1])} already inserted ({err})')
+                    log.info(f'bunch containing job {(batch_id, jobs_args[0][1])} already inserted')
                     return
                 raise
             try:
@@ -1039,7 +1063,7 @@ VALUES (%s, %s, %s);
             except pymysql.err.IntegrityError as err:
                 # 1062 ER_DUP_ENTRY https://dev.mysql.com/doc/refman/5.7/en/server-error-reference.html#error_er_dup_entry
                 if err.args[0] == 1062:
-                    raise web.HTTPBadRequest(text=f'bunch contains job with duplicated parents ({err})')
+                    raise web.HTTPBadRequest(text=f'bunch contains job with duplicated parents ({job_parents_args})')
                 raise
             await tx.execute_many(
                 '''
@@ -1717,7 +1741,7 @@ WHERE jobs.batch_id = %s AND NOT deleted AND jobs.job_id = %s;
     if len(attempts) == 1 and attempts[0]['attempt_id'] is None:
         return None
 
-    attempts.sort(key=lambda x: x['start_time'])
+    attempts.sort(key=lambda x: x['start_time'] or x['end_time'])
 
     for attempt in attempts:
         start_time = attempt['start_time']
@@ -2088,7 +2112,7 @@ async def ui_get_billing(request, userdata):
     ]
     billing_by_project_user.sort(key=lambda record: (record['billing_project'], record['user']))
 
-    total_cost = cost_str(sum([record['cost'] for record in billing]))
+    total_cost = cost_str(sum(record['cost'] for record in billing))
 
     page_context = {
         'billing_by_project': billing_by_project,
@@ -2475,6 +2499,12 @@ SELECT frozen FROM globals;
     )
     app['frozen'] = row['frozen']
 
+    regions = {
+        record['region']: record['region_id']
+        async for record in db.select_and_fetchall('SELECT region_id, region from regions')
+    }
+    app['regions'] = regions
+
 
 @routes.get('')
 @routes.get('/')
@@ -2556,6 +2586,13 @@ SELECT instance_id, internal_token, n_tokens, frozen FROM globals;
     app['batch_headers'] = {'Authorization': f'Bearer {row["internal_token"]}'}
 
     app['frozen'] = row['frozen']
+
+    regions = {
+        record['region']: record['region_id']
+        async for record in db.select_and_fetchall('SELECT region_id, region from regions')
+    }
+    assert max(regions.values()) < 64, str(regions)
+    app['regions'] = regions
 
     fs = get_cloud_async_fs(credentials_file='/gsa-key/key.json')
     app['file_store'] = FileStore(fs, BATCH_STORAGE_URI, instance_id)

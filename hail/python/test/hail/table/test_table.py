@@ -384,9 +384,25 @@ class Tests(unittest.TestCase):
     def test_semi_anti_join(self):
         ht = hl.utils.range_table(10)
         ht2 = ht.filter(ht.idx < 3)
+        ht_2k = ht.key_by(k1 = ht.idx, k2 = hl.str(ht.idx * 2))
+        ht2_2k = ht2.key_by(k1 = ht2.idx, k2 = hl.str(ht2.idx * 2))
 
         assert ht.semi_join(ht2).count() == 3
         assert ht.anti_join(ht2).count() == 7
+        assert ht_2k.semi_join(ht2).count() == 3
+        assert ht_2k.anti_join(ht2).count() == 7
+        assert ht_2k.semi_join(ht2_2k).count() == 3
+        assert ht_2k.anti_join(ht2_2k).count() == 7
+
+        with pytest.raises(ValueError, match='semi_join: cannot join'):
+            ht.semi_join(ht2_2k)
+        with pytest.raises(ValueError, match='semi_join: cannot join'):
+            ht.semi_join(ht2.key_by())
+
+        with pytest.raises(ValueError, match='anti_join: cannot join'):
+            ht.anti_join(ht2_2k)
+        with pytest.raises(ValueError, match='anti_join: cannot join'):
+            ht.anti_join(ht2.key_by())
 
     def test_indirected_joins(self):
         kt = hl.utils.range_table(1)
@@ -1986,3 +2002,17 @@ def test_write_many():
             hl.Struct(idx=3, c='3'),
             hl.Struct(idx=4, c='4')
         ]
+
+@pytest.mark.parametrize('branching_factor', [2, 3, 5, 7, 121])
+def test_indexed_read_boundaries(branching_factor):
+    with hl._with_flags(index_branching_factor=str(branching_factor)):
+        t = hl.utils.range_table(1000, 4)
+        t = t.filter(t.idx % 5 != 0)
+        f = new_temp_file(extension='ht')
+        t.write(f)
+        t1 = hl.read_table(f, _intervals=[
+            hl.Interval(start=140, end=145, includes_start=True, includes_end=True),
+            hl.Interval(start=151, end=153, includes_start=False, includes_end=False),
+        ])
+
+        assert t1.idx.collect() == [141, 142, 143, 144, 152]

@@ -10,9 +10,8 @@ import is.hail.methods.{ForceCountTable, NPartitionsTable, TableFilterPartitions
 import is.hail.rvd.{PartitionBoundOrdering, RVDPartitioner}
 import is.hail.types.physical.{PCanonicalBinary, PCanonicalTuple}
 import is.hail.types.virtual._
-import is.hail.types.{RField, RPrimitive, RStruct, RTable, TableType, TypeWithRequiredness}
-import is.hail.types.{coerce => _, _}
-import is.hail.utils.{partition, _}
+import is.hail.types.{RField, RPrimitive, RStruct, RTable, TableType, TypeWithRequiredness, tcoerce, _}
+import is.hail.utils._
 import org.apache.spark.sql.Row
 
 class LowererUnsupportedOperation(msg: String = null) extends Exception(msg)
@@ -594,13 +593,13 @@ object LowerTableIR {
         val initFromSerializedStates = Begin(aggs.aggs.zipWithIndex.map { case (agg, i) =>
           InitFromSerializedValue(i, GetTupleElement(initStateRef, i), agg.state )})
 
-        val useTreeAggregate = aggs.shouldTreeAggregate
+        val branchFactor = HailContext.get.branchingFactor
+        val useTreeAggregate = aggs.shouldTreeAggregate && branchFactor > lc.numPartitions
         val isCommutative = aggs.isCommutative
         log.info(s"Aggregate: useTreeAggregate=${ useTreeAggregate }")
         log.info(s"Aggregate: commutative=${ isCommutative }")
 
         if (useTreeAggregate) {
-          val branchFactor = HailContext.get.branchingFactor
           val tmpDir = ctx.createTmpPath("aggregate_intermediates/")
 
           val codecSpec = TypedCodecSpec(PCanonicalTuple(true, aggs.aggs.map(_ => PCanonicalBinary(true)): _*), BufferSpec.wireSpec)
@@ -690,7 +689,7 @@ object LowerTableIR {
               RunAgg(
                 Begin(FastIndexedSeq(
                   initFromSerializedStates,
-                  forIR(ToStream(collected)) { state =>
+                  forIR(ToStream(collected, requiresMemoryManagementPerElement = true)) { state =>
                     Begin(aggs.aggs.zipWithIndex.map { case (sig, i) => CombOpValue(i, GetTupleElement(state, i), sig) })
                   }
                 )),
@@ -707,7 +706,7 @@ object LowerTableIR {
         lower(child).getNumPartitions()
 
       case TableWrite(child, writer) =>
-        writer.lower(ctx, lower(child), child, coerce[RTable](analyses.requirednessAnalysis.lookup(child)), relationalLetsAbove)
+        writer.lower(ctx, lower(child), child, tcoerce[RTable](analyses.requirednessAnalysis.lookup(child)), relationalLetsAbove)
 
       case node if node.children.exists(_.isInstanceOf[TableIR]) =>
         throw new LowererUnsupportedOperation(s"IR nodes with TableIR children must be defined explicitly: \n${ Pretty(ctx, node) }")
@@ -1230,9 +1229,9 @@ object LowerTableIR {
           val initFromSerializedStates = Begin(aggs.aggs.zipWithIndex.map { case (agg, i) =>
             InitFromSerializedValue(i, GetTupleElement(initStateRef, i), agg.state)
           })
-          val big = aggs.shouldTreeAggregate
+          val branchFactor = HailContext.get.branchingFactor
+          val big = aggs.shouldTreeAggregate && branchFactor > lc.numPartitions
           val (partitionPrefixSumValues, transformPrefixSum): (IR, IR => IR) = if (big) {
-            val branchFactor = HailContext.get.branchingFactor
             val tmpDir = ctx.createTmpPath("aggregate_intermediates/")
 
             val codecSpec = TypedCodecSpec(PCanonicalTuple(true, aggs.aggs.map(_ => PCanonicalBinary(true)): _*), BufferSpec.wireSpec)
@@ -1398,7 +1397,7 @@ object LowerTableIR {
                   val acc = Ref(genUID(), initStateRef.typ)
                   val value = Ref(genUID(), collected.typ.asInstanceOf[TArray].elementType)
                   StreamScan(
-                    ToStream(collected),
+                    ToStream(collected, requiresMemoryManagementPerElement = true),
                     initStateRef,
                     acc.name,
                     value.name,
