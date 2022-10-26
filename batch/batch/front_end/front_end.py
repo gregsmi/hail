@@ -19,6 +19,7 @@ import pandas as pd
 import plotly
 import plotly.express as px
 import pymysql
+import uvloop
 from aiohttp import web
 from prometheus_async.aio.web import server_stats  # type: ignore
 
@@ -75,10 +76,7 @@ from ..spec_writer import SpecWriter
 from ..utils import query_billing_projects, regions_to_bits_rep, unavailable_if_frozen
 from .validate import ValidationError, validate_and_clean_jobs, validate_batch, validate_batch_update
 
-# import uvloop
-
-
-# uvloop.install()
+uvloop.install()
 
 log = logging.getLogger('batch.front_end')
 
@@ -1045,6 +1043,7 @@ INSERT INTO jobs (batch_id, job_id, update_id, state, spec, always_run, cores_mc
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
 ''',
                     jobs_args,
+                    query_name='insert_jobs',
                 )
             except pymysql.err.IntegrityError as err:
                 # 1062 ER_DUP_ENTRY https://dev.mysql.com/doc/refman/5.7/en/server-error-reference.html#error_er_dup_entry
@@ -1059,6 +1058,7 @@ INSERT INTO `job_parents` (batch_id, job_id, parent_id)
 VALUES (%s, %s, %s);
 ''',
                     job_parents_args,
+                    query_name='insert_job_parents',
                 )
             except pymysql.err.IntegrityError as err:
                 # 1062 ER_DUP_ENTRY https://dev.mysql.com/doc/refman/5.7/en/server-error-reference.html#error_er_dup_entry
@@ -1071,6 +1071,7 @@ INSERT INTO `job_attributes` (batch_id, job_id, `key`, `value`)
 VALUES (%s, %s, %s, %s);
 ''',
                 job_attributes_args,
+                query_name='insert_job_attributes',
             )
 
             batches_inst_coll_staging_args = [
@@ -1095,6 +1096,7 @@ ON DUPLICATE KEY UPDATE
   ready_cores_mcpu = ready_cores_mcpu + VALUES(ready_cores_mcpu);
 ''',
                 batches_inst_coll_staging_args,
+                query_name='insert_batches_inst_coll_staging',
             )
 
             batch_inst_coll_cancellable_resources_args = [
@@ -1117,6 +1119,7 @@ ON DUPLICATE KEY UPDATE
   ready_cancellable_cores_mcpu = ready_cancellable_cores_mcpu + VALUES(ready_cancellable_cores_mcpu);
 ''',
                 batch_inst_coll_cancellable_resources_args,
+                query_name='insert_inst_coll_cancellable_resources',
             )
 
             if batch_format_version.has_full_spec_in_cloud():
@@ -1126,6 +1129,7 @@ INSERT INTO batch_bunches (batch_id, token, start_job_id)
 VALUES (%s, %s, %s);
 ''',
                     (batch_id, spec_writer.token, bunch_start_job_id),
+                    query_name='insert_batch_bunches',
                 )
         except asyncio.CancelledError:
             raise
@@ -1279,12 +1283,14 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                 BATCH_FORMAT_VERSION,
                 batch_spec.get('cancel_after_n_failures'),
             ),
+            query_name='insert_batches',
         )
         await tx.execute_insertone(
             '''
 INSERT INTO batches_n_jobs_in_complete_states (id) VALUES (%s);
 ''',
             (id,),
+            query_name='insert_batches_n_jobs_in_complete_states',
         )
 
         if attributes:
@@ -1294,6 +1300,7 @@ INSERT INTO `batch_attributes` (batch_id, `key`, `value`)
 VALUES (%s, %s, %s)
 ''',
                 [(id, k, v) for k, v in attributes.items()],
+                query_name='insert_batch_attributes',
             )
         return id
 
@@ -1415,6 +1422,7 @@ INSERT INTO batch_updates
 VALUES (%s, %s, %s, %s, %s, %s, %s);
 ''',
             (batch_id, update_id, update_token, update_start_job_id, n_jobs, False, now),
+            query_name='insert_batch_update',
         )
 
         return (update_id, update_start_job_id)
@@ -1580,11 +1588,13 @@ async def _commit_update(app: web.Application, batch_id: int, update_id: int, us
             raise web.HTTPBadRequest(reason=f'wrong number of jobs: expected {expected_n_jobs}, actual {actual_n_jobs}')
         raise
 
-    await request_retry_transient_errors(
-        client_session,
-        'PATCH',
-        deploy_config.url('batch-driver', f'/api/v1alpha/batches/{user}/{batch_id}/update'),
-        headers=app['batch_headers'],
+    app['task_manager'].ensure_future(
+        request_retry_transient_errors(
+            client_session,
+            'PATCH',
+            deploy_config.url('batch-driver', f'/api/v1alpha/batches/{user}/{batch_id}/update'),
+            headers=app['batch_headers'],
+        )
     )
 
 
@@ -2591,7 +2601,8 @@ SELECT instance_id, internal_token, n_tokens, frozen FROM globals;
         record['region']: record['region_id']
         async for record in db.select_and_fetchall('SELECT region_id, region from regions')
     }
-    assert max(regions.values()) < 64, str(regions)
+    if len(regions) != 0:
+        assert max(regions.values()) < 64, str(regions)
     app['regions'] = regions
 
     fs = get_cloud_async_fs(credentials_file='/gsa-key/key.json')
@@ -2648,7 +2659,7 @@ def run():
     web.run_app(
         deploy_config.prefix_application(app, 'batch', client_max_size=HTTP_CLIENT_MAX_SIZE),
         host='0.0.0.0',
-        port=5000,
+        port=443,
         access_log_class=BatchFrontEndAccessLogger,
         ssl_context=internal_server_ssl_context(),
     )
