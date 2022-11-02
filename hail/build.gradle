@@ -9,7 +9,7 @@ plugins {
   id 'scala'
   id 'idea'
   id 'com.github.johnrengelman.shadow' version '6.1.0'
-  id "de.undercouch.download" version "3.2.0"
+  id "de.undercouch.download" version "5.3.0"
   id 'eclipse'
 }
 
@@ -164,7 +164,7 @@ dependencies {
     }
     else if (sparkVersion.startsWith("2.4.")) {
         assert(elasticMajorVersion == "7")
-        bundled 'org.elasticsearch:elasticsearch-spark-20_2.12:7.17.1'
+        bundled 'org.elasticsearch:elasticsearch-spark-20_2.12:8.4.3'
     }
     else {
         throw new UnsupportedOperationException("Couldn't pick a valid elasticsearch.")
@@ -193,7 +193,7 @@ dependencies {
 
     unbundled group: 'org.apache.commons', name: 'commons-math3', version: '3.6.1'
     bundled group: 'commons-codec', name: 'commons-codec', version: '1.11'
-    bundled group: 'org.apache.commons', name: 'commons-lang3', version: '3.5'
+    bundled group: 'org.apache.commons', name: 'commons-lang3', version: '3.12.0'
     bundled(group: 'org.apache.avro', name: 'avro', version: '1.10.2') {
         exclude group: 'com.fasterxml.jackson.core'
     }
