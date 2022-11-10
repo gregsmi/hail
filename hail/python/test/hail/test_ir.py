@@ -257,7 +257,7 @@ class MatrixIRTests(unittest.TestCase):
             matrix_read,
             matrix_range,
             ir.MatrixRead(ir.MatrixVCFReader(resource('sample.vcf'), ['GT'], hl.tfloat64, None, None, None, None, None, None,
-                                             False, True, False, True, None, None, None)),
+                                             False, True, False, True, None, None)),
             ir.MatrixRead(ir.MatrixBGENReader(resource('example.8bits.bgen'), None, {}, 10, 1, None)),
             ir.MatrixFilterRows(matrix_read, ir.FalseIR()),
             ir.MatrixFilterCols(matrix_read, ir.FalseIR()),
@@ -419,6 +419,21 @@ class CSETests(unittest.TestCase):
                 ' (Ref __cse_1)'
                 ' (Ref __cse_1)))')
         assert expected == CSERenderer()(x)
+
+    def test_stream_cse(self):
+        x = ir.StreamRange(ir.I32(0), ir.I32(10), ir.I32(1))
+        a1 = ir.ToArray(x)
+        a2 = ir.ToArray(x)
+        t = ir.MakeTuple([a1, a2])
+        expected = (
+            '(Let __cse_1 (I32 0)'
+            ' (Let __cse_2 (I32 10)'
+            ' (Let __cse_3 (I32 1)'
+            ' (MakeTuple (0 1)'
+                ' (ToArray (StreamRange 1 False (Ref __cse_1) (Ref __cse_2) (Ref __cse_3)))'
+                ' (ToArray (StreamRange 1 False (Ref __cse_1) (Ref __cse_2) (Ref __cse_3)))))))'
+        )
+        assert expected == CSERenderer()(t)
 
     def test_cse2(self):
         x = ir.I32(5)
