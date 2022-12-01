@@ -622,6 +622,7 @@ mkdir -p {shq(repo_dir)}
         return False
 
     def checkout_script(self):
+        assert self.target_branch.sha
         return f'''
 {clone_or_fetch_script(self.target_branch.branch.repo.url)}
 
@@ -640,7 +641,7 @@ class WatchedBranch(Code):
         self.deployable: bool = deployable
         self.mergeable: bool = mergeable
 
-        self.prs: Dict[str, PR] = {}
+        self.prs: Dict[int, PR] = {}
         self.sha: Optional[str] = None
 
         self.deploy_batch: Union[Batch, MergeFailureBatch, None] = None
@@ -749,7 +750,7 @@ class WatchedBranch(Code):
             self.sha = new_sha
             self.state_changed = True
 
-        new_prs: Dict[str, PR] = {}
+        new_prs: Dict[int, PR] = {}
         async for gh_json_pr in gh.getiter(f'/repos/{repo_ss}/pulls?state=open&base={self.branch.name}'):
             number = gh_json_pr['number']
             if number in self.prs:
@@ -940,6 +941,7 @@ Deploy config failed to build with exception:
                 await deploy_batch.delete()
 
     def checkout_script(self):
+        assert self.sha
         return f'''
 {clone_or_fetch_script(self.branch.repo.url)}
 
