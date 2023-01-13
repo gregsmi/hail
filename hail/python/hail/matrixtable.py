@@ -1991,7 +1991,7 @@ class MatrixTable(ExprContainer):
 
         >>> dataset.aggregate_rows(hl.struct(n_high_quality=hl.agg.count_where(dataset.qual > 40),
         ...                                  mean_qual=hl.agg.mean(dataset.qual)))
-        Struct(n_high_quality=13, mean_qual=544323.8915384616)
+        Struct(n_high_quality=9, mean_qual=140054.73333333334)
 
         Notes
         -----
@@ -2041,7 +2041,7 @@ class MatrixTable(ExprContainer):
         >>> dataset.aggregate_cols(
         ...    hl.struct(fraction_female=hl.agg.fraction(dataset.pheno.is_female),
         ...              case_ratio=hl.agg.count_where(dataset.is_case) / hl.agg.count()))
-        Struct(fraction_female=0.48, case_ratio=1.0)
+        Struct(fraction_female=0.44, case_ratio=1.0)
 
         Notes
         -----
@@ -2091,7 +2091,7 @@ class MatrixTable(ExprContainer):
 
         >>> dataset.aggregate_entries(hl.struct(global_gq_mean=hl.agg.mean(dataset.GQ),
         ...                                     call_rate=hl.agg.fraction(hl.is_defined(dataset.GT))))
-        Struct(global_gq_mean=64.01841473178543, call_rate=0.9607692307692308)
+        Struct(global_gq_mean=69.60514541387025, call_rate=0.9933333333333333)
 
         Notes
         -----
@@ -2669,12 +2669,15 @@ class MatrixTable(ExprContainer):
         if len(t.key) > 0:
             t = t.order_by(*t.key)
         col_key_type = self.col_key.dtype
+
+        col_headers = [f'<col {i}>' for i in range(0, displayed_n_cols)]
         if len(col_key_type) == 1 and col_key_type[0] in (hl.tstr, hl.tint32, hl.tint64):
             cols = self.col_key[0].take(displayed_n_cols)
-            entries = {repr(cols[i]): t.entries[i]
-                       for i in range(0, displayed_n_cols)}
-        else:
-            entries = {f'<col {i}>': t.entries[i] for i in range(0, displayed_n_cols)}
+            if len(set(cols)) == len(cols):
+                col_headers = [repr(c) for c in cols]
+
+        entries = {col_headers[i]: t.entries[i]
+                   for i in range(0, displayed_n_cols)}
         t = t.select(
             **{f: t[f] for f in self.row_key},
             **{f: t[f] for f in self.row_value if include_row_fields},

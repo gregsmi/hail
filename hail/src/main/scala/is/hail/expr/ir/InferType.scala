@@ -111,7 +111,7 @@ object InferType {
       case ToStream(a, _) =>
         val elt = tcoerce[TIterable](a.typ).elementType
         TStream(elt)
-      case RNGStateLiteral(_) =>
+      case RNGStateLiteral() =>
         TRNGState
       case RNGSplit(_, _) =>
         TRNGState
@@ -157,6 +157,13 @@ object InferType {
         query.typ
       case StreamAggScan(_, _, query) =>
         TStream(query.typ)
+      case StreamLocalLDPrune(streamChild, _, _, _, _) =>
+        val childType = tcoerce[TStruct](tcoerce[TStream](streamChild.typ).elementType)
+        TStream(TStruct(
+          "locus" -> childType.fieldType("locus"),
+          "alleles" -> childType.fieldType("alleles"),
+          "mean" -> TFloat64,
+          "centered_length_rec" -> TFloat64))
       case RunAgg(body, result, _) =>
         result.typ
       case RunAggScan(_, _, _, _, result, _) =>
