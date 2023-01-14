@@ -12,6 +12,8 @@ object HailFeatureFlags {
     ("lower", ("HAIL_DEV_LOWER" -> null)),
     ("lower_only", ("HAIL_DEV_LOWER_ONLY" -> null)),
     ("lower_bm", ("HAIL_DEV_LOWER_BM" -> null)),
+    ("print_ir_on_worker", ("HAIL_DEV_PRINT_IR_ON_WORKER" -> null)),
+    ("print_inputs_on_worker", ("HAIL_DEV_PRINT_INPUTS_ON_WORKER" -> null)),
     ("max_leader_scans", ("HAIL_DEV_MAX_LEADER_SCANS" -> "1000")),
     ("distributed_scan_comb_op", ("HAIL_DEV_DISTRIBUTED_SCAN_COMB_OP" -> null)),
     ("jvm_bytecode_dump", ("HAIL_DEV_JVM_BYTECODE_DUMP" -> null)),
@@ -29,7 +31,8 @@ object HailFeatureFlags {
     ("use_ssa_logs", "HAIL_USE_SSA_LOGS" -> null),
     ("gcs_requester_pays_project", "HAIL_GCS_REQUESTER_PAYS_PROJECT" -> null),
     ("gcs_requester_pays_buckets", "HAIL_GCS_REQUESTER_PAYS_BUCKETS" -> null),
-    ("index_branching_factor", "HAIL_INDEX_BRANCHING_FACTOR" -> null)
+    ("index_branching_factor", "HAIL_INDEX_BRANCHING_FACTOR" -> null),
+    ("rng_nonce", "HAIL_RNG_NONCE" -> "0x0")
   )
 
   def fromEnv(): HailFeatureFlags =
