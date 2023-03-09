@@ -24,6 +24,72 @@ an earlier version of Hail to read files written in a later version.
 
 ---
 
+## Version 0.2.110
+
+Released 2023-03-08
+
+### New Features
+
+- (hail#12643) In Query on Batch, `hl.skat(..., logistic=True)` is now supported.
+- (hail#12643) In Query on Batch, `hl.liftover` is now supported.
+- (hail#12629) In Query on Batch, `hl.ibd` is now supported.
+- (hail#12722) Add `hl.simulate_random_mating` to generate a population from founders under the assumption of random mating.
+- (hail#12701) Query on Spark now officially supports Spark 3.3.0 and Dataproc 2.1.x
+
+### Performance Improvements
+
+- (hail#12679) In Query on Batch, `hl.balding_nichols_model` is slightly faster. Also added `hl.utils.genomic_range_table` to quickly create a table keyed by locus.
+
+### Bug Fixes
+
+- (hail#12711) In Query on Batch, fix null pointer exception (manifesting as `scala.MatchError: null`) when reading data from requester pays buckets.
+- (hail#12739) Fix `hl.plot.cdf`, `hl.plot.pdf`, and `hl.plot.joint_plot` which were broken by changes in Hail and changes in bokeh.
+- (hail#12735) Fix (hail#11738) by allowing user to override default types in `to_pandas`.
+- (hail#12760) Mitigate some JVM bytecode generation errors, particularly those related to too many method parameters.
+- (hail#12766) Fix (hail#12759) by loosening `parsimonious` dependency pin.
+- (hail#12732) In Query on Batch, fix bug that sometimes prevented terminating a pipeline using Control-C.
+- (hail#12771) Use a version of `jgscm` whose version complies with PEP 440.
+
+---
+
+## Version 0.2.109
+
+Released 2023-02-08
+
+### New Features
+
+- (hail#12605) Add `hl.pgenchisq` the cumulative distribution function of the generalized chi-squared distribution.
+- (hail#12637) Query-on-Batch now supports `hl.skat(..., logistic=False)`.
+- (hail#12645) Added `hl.vds.truncate_reference_blocks` to transform a VDS to checkpoint reference blocks in order to drastically improve interval filtering performance. Also added `hl.vds.merge_reference_blocks` to merge adjacent reference blocks according to user criteria to better compress reference data.
+
+### Bug Fixes
+
+- (hail#12650) Hail will now throw an exception on `hl.export_bgen` when there is no GP field, instead of exporting null records.
+- (hail#12635) Fix bug where `hl.skat` did not work on Apple M1 machines.
+- (hail#12571) When using Query-on-Batch, hl.hadoop* methods now properly support creation and modification time.
+- (hail#12566) Improve error message when combining incompatibly indexed fields in certain operations including array indexing.
+
+---
+
+## Version 0.2.108
+
+Released 2023-1-12
+
+### New Features
+
+- (hail#12576) `hl.import_bgen` and `hl.export_bgen` now support compression with Zstd.
+
+### Bug fixes
+
+- (hail#12585) `hail.ggplot`s that have more than one legend group or facet are now interactive. If such a plot has enough legend entries that the legend would be taller than the plot, the legend will now be scrollable. Legend entries for such plots can be clicked to show/hide traces on the plot, but this does not work and is a known issue that will only be addressed if `hail.ggplot` is migrated off of plotly.
+- (hail#12584) Fixed bug which arose as an assertion error about type mismatches. This was usually triggered when working with tuples.
+- (hail#12583) Fixed bug which showed an empty table for `ht.col_key.show()`.
+- (hail#12582) Fixed bug where matrix tables with duplicate col keys do not show properly. Also fixed bug where tables and matrix tables with HTML unsafe column headers are rendered wrong in Jupyter.
+- (hail#12574) Fixed a memory leak when processing tables. Could trigger unnecessarily high memory use and out of memory errors when there are many rows per partition or large key fields.
+- (hail#12565) Fixed a bug that prevented exploding on a field of a Table whose value is a random value.
+
+---
+
 ## Version 0.2.107
 
 Released 2022-12-14

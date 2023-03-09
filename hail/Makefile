@@ -12,9 +12,9 @@ REVISION := $(shell git rev-parse HEAD)
 SHORT_REVISION := $(shell git rev-parse --short=12 HEAD)
 BRANCH := $(shell git rev-parse --abbrev-ref HEAD)
 SCALA_VERSION ?= 2.12.13
-SPARK_VERSION ?= 3.1.3
+SPARK_VERSION ?= 3.3.0
 HAIL_MAJOR_MINOR_VERSION := 0.2
-HAIL_PATCH_VERSION := 107
+HAIL_PATCH_VERSION := 110
 HAIL_PIP_VERSION := $(HAIL_MAJOR_MINOR_VERSION).$(HAIL_PATCH_VERSION)
 HAIL_VERSION := $(HAIL_PIP_VERSION)-$(SHORT_REVISION)
 ELASTIC_MAJOR_VERSION ?= 7
@@ -67,7 +67,7 @@ GRADLE_ARGS += -Dscala.version=$(SCALA_VERSION) -Dspark.version=$(SPARK_VERSION)
 
 QUERY_STORAGE_URI = $(shell kubectl get secret global-config --template={{.data.query_storage_uri}} | base64 --decode)
 TEST_STORAGE_URI = $(shell kubectl get secret global-config --template={{.data.test_storage_uri}} | base64 --decode)
-TOKEN := $(shell cat /dev/urandom | LC_ALL=C tr -dc 'a-z0-9' | head -c 12)
+TOKEN := $(shell cat /dev/urandom 2> /dev/null | LC_ALL=C tr -dc 'a-z0-9' 2> /dev/null | head -c 12)
 
 ifeq ($(NAMESPACE),default)
 ifeq ($(UPLOAD_RELEASE_JAR),true)
@@ -80,9 +80,9 @@ endif
 else
 JAR_LOCATION = $(TEST_STORAGE_URI)/$(NAMESPACE)/jars/$(TOKEN)/$(REVISION).jar
 endif
-HAIL_TEST_RESOURCES_PREFIX = $(TEST_STORAGE_URI)/$(shell whoami)/hail-test-resources
-HAIL_TEST_RESOURCES_DIR = $(HAIL_TEST_RESOURCES_PREFIX)/test/resources/
-HAIL_DOCTEST_DATA_DIR = $(HAIL_TEST_RESOURCES_PREFIX)/doctest/data/
+CLOUD_HAIL_TEST_RESOURCES_PREFIX = $(TEST_STORAGE_URI)/$(shell whoami)/hail-test-resources
+CLOUD_HAIL_TEST_RESOURCES_DIR = $(CLOUD_HAIL_TEST_RESOURCES_PREFIX)/test/resources/
+CLOUD_HAIL_DOCTEST_DATA_DIR = $(CLOUD_HAIL_TEST_RESOURCES_PREFIX)/doctest/data/
 
 .PHONY: shadowJar
 shadowJar: $(SHADOW_JAR)
@@ -98,6 +98,9 @@ $(SHADOW_JAR): $(SCALA_BUILD_INFO) $(JAR_SOURCES) env/HAIL_DEBUG_MODE env/ELASTI
 ifdef HAIL_DEBUG_MODE
 	$(JAR) -uf $(SHADOW_JAR) -C $(BUILD_DEBUG_PREFIX) is/hail/annotations/Memory.class
 endif
+
+.PHONY: shadowTestJar
+shadowTestJar: $(SHADOW_TEST_JAR)
 
 ifdef HAIL_COMPILE_NATIVES
 $(SHADOW_TEST_JAR): native-lib-prebuilt
@@ -186,7 +189,7 @@ pytest-qob: upload-qob-jar upload-qob-test-resources install-editable
   HAIL_QUERY_BACKEND=batch \
 	HAIL_QUERY_JAR_URL=$$(cat ../upload-qob-jar) \
 	HAIL_DEFAULT_NAMESPACE=$(NAMESPACE) \
-	HAIL_TEST_RESOURCES_DIR='$(HAIL_TEST_RESOURCES_DIR)' \
+	HAIL_TEST_RESOURCES_DIR='$(CLOUD_HAIL_TEST_RESOURCES_DIR)' \
 	HAIL_DOCTEST_DATA_DIR='$(HAIL_DOCTEST_DATA_DIR)' \
 	pytest \
 		-v \
@@ -306,15 +309,14 @@ upload-artifacts: $(WHEEL)
 # > rm upload-qob-test-resources
 upload-qob-test-resources: $(JAR_TEST_SOURCES)
 	! [ -z $(NAMESPACE) ]  # call this like: make upload-qob-test-resources NAMESPACE=default
-	gsutil -m cp -r src/test/resources $(HAIL_TEST_RESOURCES_DIR)
-	gsutil -m cp -r python/hail/docs/data $(HAIL_DOCTEST_DATA_DIR)
+	gsutil -m cp -r src/test/resources/\* $(CLOUD_HAIL_TEST_RESOURCES_DIR)
+	gsutil -m cp -r python/hail/docs/data/\* $(CLOUD_HAIL_DOCTEST_DATA_DIR)
 	touch $@
 
 # NOTE: 1-day expiration of the test bucket means that this
 # target must be run at least once a day if using a dev NAMESPACE.
 # To trigger this target to re-run,
 # > rm upload-qob-jar
-upload-qob-jar: SPARK_VERSION := 3.2.1
 upload-qob-jar: $(SHADOW_JAR)
 	! [ -z $(NAMESPACE) ]  # call this like: make upload-qob-jar NAMESPACE=default
 	gsutil -m cp $(SHADOW_JAR) $(JAR_LOCATION)

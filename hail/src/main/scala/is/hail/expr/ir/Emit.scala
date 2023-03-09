@@ -3,7 +3,7 @@ package is.hail.expr.ir
 import is.hail.HailContext
 import is.hail.annotations._
 import is.hail.asm4s._
-import is.hail.backend.{BackendContext, ExecuteContext}
+import is.hail.backend.{BackendContext, ExecuteContext, HailTaskContext}
 import is.hail.expr.ir.agg.{AggStateSig, ArrayAggStateSig, GroupedStateSig}
 import is.hail.expr.ir.analyses.{ComputeMethodSplits, ControlFlowPreventsSplit, ParentPointers}
 import is.hail.expr.ir.lowering.TableStageDependency
@@ -20,6 +20,7 @@ import is.hail.types.physical.stypes.primitives._
 import is.hail.types.virtual._
 import is.hail.types.{RIterable, TypeWithRequiredness, VirtualTypeWithReq, tcoerce}
 import is.hail.utils._
+import is.hail.variant.ReferenceGenome
 
 import java.io._
 import scala.collection.mutable
@@ -1133,6 +1134,30 @@ class Emit[C](
           sorter.toRegion(cb, x.typ)
         }
 
+      case ArrayMaximalIndependentSet(edges, tieBreaker) =>
+        emitI(edges).map(cb) { edgesCode =>
+          val jEdges: Value[UnsafeIndexedSeq] = cb.memoize(Code.checkcast[UnsafeIndexedSeq]((is.hail.expr.ir.functions.ArrayFunctions.svalueToJavaValue(cb, region, edgesCode))))
+          val maxSet = tieBreaker match {
+            case None =>
+              Code.invokeScalaObject1[UnsafeIndexedSeq, IndexedSeq[Any]](Graph.getClass, "maximalIndependentSet", jEdges)
+            case Some((leftName, rightName, tieBreaker)) =>
+              val nodeType = tcoerce[TArray](edges.typ).elementType.asInstanceOf[TBaseStruct].types.head
+              val wrappedNodeType = PCanonicalTuple(true, PType.canonical(nodeType))
+              val (Some(PTypeReferenceSingleCodeType(t)), f) = Compile[AsmFunction3RegionLongLongLong](ctx.executeContext,
+                IndexedSeq((leftName, SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(wrappedNodeType))),
+                           (rightName, SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(wrappedNodeType)))),
+                FastIndexedSeq(classInfo[Region], LongInfo, LongInfo), LongInfo,
+                MakeTuple.ordered(FastSeq(tieBreaker)))
+              assert(t.virtualType == TTuple(TFloat64))
+              val resultType = t.asInstanceOf[PTuple]
+              Code.invokeScalaObject9[Map[String, ReferenceGenome], UnsafeIndexedSeq, HailClassLoader, FS, HailTaskContext, Region, PTuple, PTuple, (HailClassLoader, FS, HailTaskContext, Region) => AsmFunction3RegionLongLongLong, IndexedSeq[Any]](
+                Graph.getClass, "maximalIndependentSet", cb.emb.ecb.emodb.referenceGenomeMap,
+                  jEdges, mb.getHailClassLoader, mb.getFS, mb.getTaskContext, region,
+                  mb.getPType[PTuple](wrappedNodeType), mb.getPType[PTuple](resultType), mb.getObject(f))
+          }
+          is.hail.expr.ir.functions.ArrayFunctions.unwrapReturn(cb, region, typeWithReq.canonicalEmitType.st, maxSet)
+        }
+
       case x@ToSet(a) =>
         emitStream(a, cb, region).map(cb) { case stream: SStreamValue =>
           val producer = stream.getProducer(mb)
@@ -1585,7 +1610,7 @@ class Emit[C](
                 outputPType.makeColumnMajorStrides(IndexedSeq(outputSize), region, cb),
                 cb,
                 region)
-              
+
               cb.append(Code.invokeScalaObject11[String, Int, Int, Double, Long, Int, Long, Int, Double, Long, Int, Unit](BLAS.getClass, method="dgemv",
                 TRANS,
                 M.toI,
@@ -2242,7 +2267,8 @@ class Emit[C](
 
       case ReadValue(path, spec, requestedType) =>
         emitI(path).map(cb) { pv =>
-          val ib = cb.memoize[InputBuffer](spec.buildCodeInputBuffer(mb.open(pv.asString.loadString(cb), checkCodec = true)))
+          val ib = cb.memoize[InputBuffer](spec.buildCodeInputBuffer(
+            mb.openUnbuffered(pv.asString.loadString(cb), checkCodec = true)))
           val decoded = spec.encodedType.buildDecoder(requestedType, mb.ecb)(cb, region, ib)
           cb += ib.close()
           decoded
@@ -2251,7 +2277,7 @@ class Emit[C](
       case WriteValue(value, path, spec) =>
         emitI(path).flatMap(cb) { case pv: SStringValue =>
           emitI(value).map(cb) { v =>
-            val ob = cb.memoize[OutputBuffer](spec.buildCodeOutputBuffer(mb.create(pv.asString.loadString(cb))))
+            val ob = cb.memoize[OutputBuffer](spec.buildCodeOutputBuffer(mb.createUnbuffered(pv.asString.loadString(cb))))
             spec.encodedType.buildEncoder(v.st, cb.emb.ecb)
               .apply(cb, v, ob)
             cb += ob.invoke[Unit]("close")
@@ -2448,7 +2474,7 @@ class Emit[C](
           emitI(dynamicID).consume(cb,
             (),
             { dynamicID =>
-              cb.assign(stageName, stageName.concat(": ").concat(dynamicID.asString.loadString(cb)))
+              cb.assign(stageName, stageName.concat("|").concat(dynamicID.asString.loadString(cb)))
             })
 
           cb.assign(encRes, spark.invoke[BackendContext, HailClassLoader, FS, String, Array[Array[Byte]], Array[Byte], String, Option[TableStageDependency], Array[Array[Byte]]](

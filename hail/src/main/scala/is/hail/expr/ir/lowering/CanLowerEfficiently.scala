@@ -42,6 +42,7 @@ object CanLowerEfficiently {
         case t: TableRepartition => fail(s"TableRepartition has no lowered implementation")
         case t: TableParallelize =>
         case t: TableRange =>
+        case t: TableGenomicRange =>
         case TableKeyBy(child, keys, isSorted) =>
         case t: TableOrderBy =>
         case t: TableFilter =>
@@ -69,6 +70,7 @@ object CanLowerEfficiently {
         case t: BlockMatrixToTableApply => fail(s"BlockMatrixToTableApply")
         case t: BlockMatrixToTable => fail(s"BlockMatrixToTable has no lowered implementation")
 
+        case x: BlockMatrixAgg => fail(s"BlockMatrixAgg needs to do tree aggregation")
         case x: BlockMatrixIR => fail(s"BlockMatrixIR lowering not yet efficient/scalable")
         case x: BlockMatrixWrite => fail(s"BlockMatrixIR lowering not yet efficient/scalable")
         case x: BlockMatrixMultiWrite => fail(s"BlockMatrixIR lowering not yet efficient/scalable")

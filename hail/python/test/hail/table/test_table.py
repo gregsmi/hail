@@ -1039,17 +1039,21 @@ class Tests(unittest.TestCase):
         self.assertTrue(t1.key_by().union(t2.key_by(), t3.key_by())
                         ._same(hl.utils.range_table(15).key_by()))
 
-    @skip_unless_spark_backend('intermittent failure due to too large code')
-    def test_nested_union(self):
-        N = 10
-        M = 200
+    def nested_union(self, N, M):
         t = hl.utils.range_table(N, n_partitions=1)
-        t = t.filter(hl.rand_bool(1)) # prevent count optimization
+        t = t.filter(hl.rand_bool(1))  # prevent count optimization
 
         union = hl.Table.union(*[t for _ in range(M)])
 
         assert union._force_count() == N * M
         assert union.count() == N * M
+
+    def test_nested_union_100(self):
+        self.nested_union(10, 100)
+
+    @pytest.mark.skip('causes intermitted stack overflow in compiler due ')
+    def test_nested_union_200(self):
+        self.nested_union(10, 200)
 
     def test_union_unify(self):
         t1 = hl.utils.range_table(2)
@@ -1874,8 +1878,6 @@ def test_to_pandas():
     strs = ["foo", "bar", "baz"]
     ht = ht.annotate(s = hl.array(strs)[ht.idx], nested=hl.struct(foo = ht.idx, bar=hl.range(ht.idx)))
     df_from_hail = ht.to_pandas(flatten=False)
-    print(df_from_hail)
-    print(df_from_hail.dtypes)
 
     python_data = {
         "idx": pd.Series([0, 1, 2], dtype='Int32'),
@@ -1886,6 +1888,34 @@ def test_to_pandas():
 
     df_from_python = pd.DataFrame(python_data)
     pd.testing.assert_frame_equal(df_from_hail, df_from_python)
+
+
+def test_to_pandas_types_type_to_type():
+    ht = hl.utils.range_table(3)
+    ht = ht.annotate(
+        s=hl.array(["foo", "bar", "baz"])[ht.idx],
+        nested=hl.struct(foo=ht.idx,
+                         bar=hl.range(ht.idx))
+    )
+    actual = dict(ht.to_pandas(types={hl.tint32: 'Int64'}).dtypes)
+    assert isinstance(actual['idx'], pd.Int64Dtype)
+    assert isinstance(actual['s'], pd.StringDtype)
+    assert isinstance(actual['nested.foo'], pd.Int64Dtype)
+    assert actual['nested.bar'] == np.dtype('O')
+
+
+def test_to_pandas_types_column_to_type():
+    ht = hl.utils.range_table(3)
+    ht = ht.annotate(
+        s=hl.array(["foo", "bar", "baz"])[ht.idx],
+        nested=hl.struct(foo=ht.idx,
+                         bar=hl.range(ht.idx))
+    )
+    actual = dict(ht.to_pandas(types={'nested.foo': 'Int64'}).dtypes)
+    assert isinstance(actual['idx'], pd.Int32Dtype)
+    assert isinstance(actual['s'], pd.StringDtype)
+    assert isinstance(actual['nested.foo'], pd.Int64Dtype)
+    assert actual['nested.bar'] == np.dtype('O')
 
 
 def test_to_pandas_flatten():
