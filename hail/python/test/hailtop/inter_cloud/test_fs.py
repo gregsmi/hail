@@ -483,10 +483,10 @@ async def test_statfile(filesystem: Tuple[asyncio.Semaphore, AsyncFS, AsyncFSURL
 
 
 @pytest.mark.asyncio
-async def test_statfile_creation_and_modified_time(filesystem: Tuple[asyncio.Semaphore, AsyncFS, str]):
+async def test_statfile_creation_and_modified_time(filesystem: Tuple[asyncio.Semaphore, AsyncFS, AsyncFSURL]):
     _, fs, base = filesystem
 
-    file = f'{base}bar'
+    file = str(base.with_new_path_component('bar'))
     now = datetime.datetime.utcnow()
     await fs.write(file, b'abc123')
     status = await fs.statfile(file)
