@@ -37,6 +37,7 @@ from gear import (
 )
 from gear.clients import get_cloud_async_fs
 from gear.database import CallError
+from gear.profiling import install_profiler_if_requested
 from hailtop import aiotools, dictfix, httpx, version
 from hailtop.batch_client.parse import parse_cpu_in_mcpu, parse_memory_in_bytes, parse_storage_in_bytes
 from hailtop.config import get_deploy_config
@@ -73,7 +74,7 @@ from ..exceptions import (
     NonExistentBillingProjectError,
 )
 from ..file_store import FileStore
-from ..globals import BATCH_FORMAT_VERSION, HTTP_CLIENT_MAX_SIZE, complete_states
+from ..globals import BATCH_FORMAT_VERSION, HTTP_CLIENT_MAX_SIZE, RESERVED_STORAGE_GB_PER_CORE, complete_states
 from ..inst_coll_config import InstanceCollectionConfigs
 from ..resource_usage import ResourceUsageMonitor
 from ..spec_writer import SpecWriter
@@ -255,12 +256,16 @@ async def _query_batch_jobs(request, batch_id):
 
         if '=' in t:
             k, v = t.split('=', 1)
-            condition = '''
+            if k == 'job_id':
+                condition = '(jobs.job_id = %s)'
+                args = [v]
+            else:
+                condition = '''
 ((jobs.batch_id, jobs.job_id) IN
  (SELECT batch_id, job_id FROM job_attributes
   WHERE `key` = %s AND `value` = %s))
 '''
-            args = [k, v]
+                args = [k, v]
         elif t.startswith('has:'):
             k = t[4:]
             condition = '''
@@ -404,47 +409,61 @@ def has_resource_available(record):
     return True
 
 
-def attempt_id_from_spec(record):
+def attempt_id_from_spec(record) -> Optional[str]:
     return record['attempt_id'] or record['last_cancelled_attempt_id']
 
 
-async def _get_job_log(app, batch_id, job_id):
-    record = await _get_job_record(app, batch_id, job_id)
+async def _get_job_container_log_from_worker(client_session, batch_id, job_id, container, ip_address) -> bytes:
+    try:
+        async with await request_retry_transient_errors(
+            client_session,
+            'GET',
+            f'http://{ip_address}:5000/api/v1alpha/batches/{batch_id}/jobs/{job_id}/log/{container}',
+        ) as resp:
+            return await resp.read()
+    except aiohttp.ClientResponseError:
+        log.exception(f'while getting log for {(batch_id, job_id)}')
+        return b'ERROR: encountered a problem while fetching the log'
 
-    client_session: httpx.ClientSession = app['client_session']
-    file_store: FileStore = app['file_store']
-    batch_format_version = BatchFormatVersion(record['format_version'])
 
-    state = record['state']
-    ip_address = record['ip_address']
-    tasks = job_tasks_from_spec(record)
-    attempt_id = attempt_id_from_spec(record)
+async def _read_job_container_log_from_cloud_storage(
+    file_store: FileStore, batch_format_version: BatchFormatVersion, batch_id, job_id, container, attempt_id
+) -> bytes:
+    try:
+        return await file_store.read_log_file(batch_format_version, batch_id, job_id, attempt_id, container)
+    except FileNotFoundError:
+        id = (batch_id, job_id)
+        log.exception(f'missing log file for {id} and container {container}')
+        return b'ERROR: could not find log file'
 
-    if not has_resource_available(record):
+
+async def _get_job_container_log(app, batch_id, job_id, container, job_record) -> Optional[bytes]:
+    if not has_resource_available(job_record):
         return None
 
+    state = job_record['state']
     if state == 'Running':
-        try:
-            async with await request_retry_transient_errors(
-                client_session, 'GET', f'http://{ip_address}:5000/api/v1alpha/batches/{batch_id}/jobs/{job_id}/log'
-            ) as resp:
-                return await resp.json()
-        except aiohttp.ClientResponseError:
-            log.exception(f'while getting log for {(batch_id, job_id)}')
-            return {task: 'ERROR: encountered a problem while fetching the log' for task in tasks}
+        return await _get_job_container_log_from_worker(
+            app['client_session'], batch_id, job_id, container, job_record['ip_address']
+        )
 
+    attempt_id = attempt_id_from_spec(job_record)
     assert attempt_id is not None and state in complete_states
+    return await _read_job_container_log_from_cloud_storage(
+        app['file_store'],
+        BatchFormatVersion(job_record['format_version']),
+        batch_id,
+        job_id,
+        container,
+        attempt_id,
+    )
 
-    async def _read_log_from_cloud_storage(task):
-        try:
-            data = await file_store.read_log_file(batch_format_version, batch_id, job_id, attempt_id, task)
-        except FileNotFoundError:
-            id = (batch_id, job_id)
-            log.exception(f'missing log file for {id} and task {task}')
-            data = 'ERROR: could not find log file'
-        return task, data
 
-    return dict(await asyncio.gather(*[_read_log_from_cloud_storage(task) for task in tasks]))
+async def _get_job_log(app, batch_id, job_id) -> Dict[str, Optional[bytes]]:
+    record = await _get_job_record(app, batch_id, job_id)
+    containers = job_tasks_from_spec(record)
+    logs = await asyncio.gather(*[_get_job_container_log(app, batch_id, job_id, c, record) for c in containers])
+    return dict(zip(containers, logs))
 
 
 async def _get_job_resource_usage(app, batch_id, job_id):
@@ -582,12 +601,39 @@ async def _get_full_job_status(app, record):
         raise
 
 
+# deprecated
 @routes.get('/api/v1alpha/batches/{batch_id}/jobs/{job_id}/log')
 @rest_billing_project_users_only
 async def get_job_log(request, userdata, batch_id):  # pylint: disable=unused-argument
     job_id = int(request.match_info['job_id'])
-    job_log = await _get_job_log(request.app, batch_id, job_id)
-    return web.json_response(job_log)
+    job_log_bytes = await _get_job_log(request.app, batch_id, job_id)
+    job_log_strings: Dict[str, Optional[str]] = {}
+    for container, log in job_log_bytes.items():
+        try:
+            job_log_strings[container] = log.decode('utf-8') if log is not None else None
+        except UnicodeDecodeError as e:
+            raise web.HTTPBadRequest(
+                reason=f'log for container {container} is not valid UTF-8, upgrade your hail version to download the log'
+            ) from e
+    return web.json_response(job_log_strings)
+
+
+async def get_job_container_log(request, batch_id):
+    app = request.app
+    job_id = int(request.match_info['job_id'])
+    container = request.match_info['container']
+    record = await _get_job_record(app, batch_id, job_id)
+    containers = job_tasks_from_spec(record)
+    if container not in containers:
+        raise web.HTTPBadRequest(reason=f'unknown container {container}')
+    job_log = await _get_job_container_log(app, batch_id, job_id, container, record)
+    return web.Response(body=job_log)
+
+
+@routes.get('/api/v1alpha/batches/{batch_id}/jobs/{job_id}/log/{container}')
+@rest_billing_project_users_only
+async def rest_get_job_container_log(request, userdata, batch_id):  # pylint: disable=unused-argument
+    return await get_job_container_log(request, batch_id)
 
 
 async def _query_batches(request, user, q):
@@ -1910,30 +1956,62 @@ def plot_job_durations(container_statuses: dict, batch_id: int, job_id: int):
     return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
 
-def plot_resource_usage(resource_usage: Optional[Dict[str, Optional[pd.DataFrame]]]) -> Optional[str]:
+def plot_resource_usage(
+    resource_usage: Optional[Dict[str, Optional[pd.DataFrame]]],
+    memory_limit_bytes: Optional[int],
+    io_storage_limit_bytes: Optional[int],
+    non_io_storage_limit_bytes: Optional[int],
+) -> Optional[str]:
     if resource_usage is None:
         return None
+
+    if io_storage_limit_bytes is not None:
+        if io_storage_limit_bytes == 0:
+            io_storage_title = ''
+        else:
+            io_storage_title = (
+                f'Storage (Mounted Drive at /io) - {humanize.naturalsize(io_storage_limit_bytes, binary=False)} max'
+            )
+    else:
+        io_storage_title = 'Storage (Mounted Drive at /io)'
+
+    if non_io_storage_limit_bytes is not None:
+        if io_storage_limit_bytes != 0:
+            non_io_storage_title = (
+                f'Storage (Container Overlay) - {humanize.naturalsize(non_io_storage_limit_bytes, binary=False)} max'
+            )
+        else:
+            non_io_storage_title = f'Storage - {humanize.naturalsize(non_io_storage_limit_bytes, binary=False)} max'
+    else:
+        non_io_storage_title = 'Storage (Container Overlay)'
+
+    if memory_limit_bytes is not None:
+        memory_title = f'Memory - {humanize.naturalsize(memory_limit_bytes, binary=False)} max'
+    else:
+        memory_title = 'Memory'
 
     fig = make_subplots(
         rows=3,
         cols=2,
         subplot_titles=(
             'CPU Usage',
-            'Memory',
-            'Storage (Container minus /io)',
-            'Storage (/io)',
-            'Network Upload Bandwidth (MB/sec)',
+            memory_title,
             'Network Download Bandwidth (MB/sec)',
+            'Network Upload Bandwidth (MB/sec)',
+            non_io_storage_title,
+            io_storage_title,
         ),
     )
-    fig.update_layout(height=600, width=800)
+    fig.update_layout(height=800, width=800)
 
     colors = {'input': 'red', 'main': 'green', 'output': 'blue'}
 
     max_cpu_value = 1
     max_memory_value = 1024 * 1024
-    max_storage_value = 1024 * 1024 * 1024
-    max_network_bandwidth_value = 500
+    max_download_network_bandwidth_value = 500
+    max_upload_network_bandwidth_value = 500
+    max_io_storage_value = 1024 * 1024 * 1024
+    max_non_io_storage_value = 1024 * 1024 * 1024
     n_total_rows = 0
 
     for container_name, df in resource_usage.items():
@@ -1952,18 +2030,18 @@ def plot_resource_usage(resource_usage: Optional[Dict[str, Optional[pd.DataFrame
                 df[colname] = ResourceUsageMonitor.missing_value
             return df[colname]
 
+        network_download_df = get_df(df, 'network_bandwidth_download_in_bytes_per_second')
+        network_upload_df = get_df(df, 'network_bandwidth_upload_in_bytes_per_second')
         non_io_storage_df = get_df(df, 'non_io_storage_in_bytes')
         io_storage_df = get_df(df, 'io_storage_in_bytes')
-        network_upload_df = get_df(df, 'network_bandwidth_upload_in_bytes_per_second')
-        network_download_df = get_df(df, 'network_bandwidth_download_in_bytes_per_second')
 
         if n_rows != 0:
             max_cpu_value = max(max_cpu_value, cpu_df.max())
             max_memory_value = max(max_memory_value, mem_df.max())
-            max_storage_value = max(max_storage_value, non_io_storage_df.max(), io_storage_df.max())
-            max_network_bandwidth_value = max(
-                max_network_bandwidth_value, network_upload_df.max(), network_download_df.max()
-            )
+            max_download_network_bandwidth_value = max(max_download_network_bandwidth_value, network_download_df.max())
+            max_upload_network_bandwidth_value = max(max_upload_network_bandwidth_value, network_upload_df.max())
+            max_io_storage_value = max(max_io_storage_value, io_storage_df.max())
+            max_non_io_storage_value = max(max_non_io_storage_value, non_io_storage_df.max())
 
         def add_trace(time, measurement, row, col, container_name, show_legend):
             fig.add_trace(
@@ -1982,23 +2060,32 @@ def plot_resource_usage(resource_usage: Optional[Dict[str, Optional[pd.DataFrame
 
         add_trace(time_df, cpu_df, 1, 1, container_name, True)
         add_trace(time_df, mem_df, 1, 2, container_name, False)
-        add_trace(time_df, non_io_storage_df, 2, 1, container_name, False)
-        add_trace(time_df, io_storage_df, 2, 2, container_name, False)
-        add_trace(time_df, network_upload_df, 3, 1, container_name, False)
-        add_trace(time_df, network_download_df, 3, 2, container_name, False)
+        add_trace(time_df, network_download_df, 2, 1, container_name, False)
+        add_trace(time_df, network_upload_df, 2, 2, container_name, False)
+        add_trace(time_df, non_io_storage_df, 3, 1, container_name, False)
+        if io_storage_limit_bytes != 0:
+            add_trace(time_df, io_storage_df, 3, 2, container_name, False)
+
+        limit_props = {'color': 'black', 'width': 2}
+        if memory_limit_bytes is not None:
+            fig.add_hline(memory_limit_bytes, row=1, col=2, line=limit_props)
+        if non_io_storage_limit_bytes is not None:
+            fig.add_hline(non_io_storage_limit_bytes, row=3, col=1, line=limit_props)
+        if io_storage_limit_bytes is not None:
+            fig.add_hline(io_storage_limit_bytes, row=3, col=2, line=limit_props)
 
     fig.update_layout(
         showlegend=True,
         yaxis1_tickformat='%',
         yaxis2_tickformat='s',
-        yaxis3_tickformat='s',
-        yaxis4_tickformat='s',
+        yaxis5_tickformat='s',
+        yaxis6_tickformat='s',
         yaxis1_range=[0, 1.25 * max_cpu_value],
         yaxis2_range=[0, 1.25 * max_memory_value],
-        yaxis3_range=[0, 1.25 * max_storage_value],
-        yaxis4_range=[0, 1.25 * max_storage_value],
-        yaxis5_range=[0, 1.25 * max_network_bandwidth_value],
-        yaxis6_range=[0, 1.25 * max_network_bandwidth_value],
+        yaxis3_range=[0, 1.25 * max_download_network_bandwidth_value],
+        yaxis4_range=[0, 1.25 * max_upload_network_bandwidth_value],
+        yaxis5_range=[0, 1.25 * max_non_io_storage_value],
+        yaxis6_range=[0, 1.25 * max_io_storage_value],
     )
 
     if n_total_rows == 0:
@@ -2014,7 +2101,7 @@ async def ui_get_job(request, userdata, batch_id):
     app = request.app
     job_id = int(request.match_info['job_id'])
 
-    job, attempts, job_log, resource_usage = await asyncio.gather(
+    job, attempts, job_log_bytes, resource_usage = await asyncio.gather(
         _get_job(app, batch_id, job_id),
         _get_attempts(app, batch_id, job_id),
         _get_job_log(app, batch_id, job_id),
@@ -2067,22 +2154,40 @@ async def ui_get_job(request, userdata, batch_id):
             job_specification, dictfix.NoneOr({'image': str, 'command': list, 'resources': {}, 'env': list})
         )
 
+    io_storage_limit_bytes = None
+    non_io_storage_limit_bytes = None
+    memory_limit_bytes = None
+
     resources = job_specification['resources']
     if 'memory_bytes' in resources:
-        resources['actual_memory'] = humanize.naturalsize(resources['memory_bytes'], binary=True)
+        memory_limit_bytes = resources['memory_bytes']
+        resources['actual_memory'] = humanize.naturalsize(memory_limit_bytes, binary=True)
         del resources['memory_bytes']
     if 'storage_gib' in resources:
-        resources['actual_storage'] = humanize.naturalsize(resources['storage_gib'] * 1024**3, binary=True)
+        io_storage_limit_bytes = resources['storage_gib'] * 1024**3
+        resources['actual_storage'] = humanize.naturalsize(io_storage_limit_bytes, binary=True)
         del resources['storage_gib']
     if 'cores_mcpu' in resources:
-        resources['actual_cpu'] = resources['cores_mcpu'] / 1000
+        cores = resources['cores_mcpu'] / 1000
+        non_io_storage_limit_gb = min(cores * RESERVED_STORAGE_GB_PER_CORE, RESERVED_STORAGE_GB_PER_CORE)
+        non_io_storage_limit_bytes = int(non_io_storage_limit_gb * 1024**3 + 1)
+        resources['actual_cpu'] = cores
         del resources['cores_mcpu']
+
+    # Not all logs will be proper utf-8 but we attempt to show them as
+    # str or else Jinja will present them surrounded by b''
+    job_log_strings_or_bytes = {}
+    for container, log in job_log_bytes.items():
+        try:
+            job_log_strings_or_bytes[container] = log.decode('utf-8') if log is not None else None
+        except UnicodeDecodeError:
+            job_log_strings_or_bytes[container] = log
 
     page_context = {
         'batch_id': batch_id,
         'job_id': job_id,
         'job': job,
-        'job_log': job_log,
+        'job_log': job_log_strings_or_bytes,
         'attempts': attempts,
         'container_statuses': container_statuses,
         'job_specification': job_specification,
@@ -2090,23 +2195,20 @@ async def ui_get_job(request, userdata, batch_id):
         'step_errors': step_errors,
         'error': job_status.get('error'),
         'plot_job_durations': plot_job_durations(container_statuses, batch_id, job_id),
-        'plot_resource_usage': plot_resource_usage(resource_usage),
+        'plot_resource_usage': plot_resource_usage(
+            resource_usage, memory_limit_bytes, io_storage_limit_bytes, non_io_storage_limit_bytes
+        ),
     }
 
     return await render_template('batch', request, userdata, 'job.html', page_context)
 
 
+# This should really be the exact same thing as the REST endpoint
 @routes.get('/batches/{batch_id}/jobs/{job_id}/log/{container}')
 @web_billing_project_users_only()
 @catch_ui_error_in_dev
 async def ui_get_job_log(request, userdata, batch_id):  # pylint: disable=unused-argument
-    app = request.app
-    job_id = int(request.match_info['job_id'])
-    container = request.match_info['container']
-    job_log = await _get_job_log(app, batch_id, job_id)
-    if container not in job_log:
-        raise web.HTTPBadRequest(reason=f'unknown container {container}')
-    return web.Response(text=job_log[container])
+    return await get_job_container_log(request, batch_id)
 
 
 @routes.get('/billing_limits')
@@ -2802,7 +2904,7 @@ SELECT instance_id, internal_token, n_tokens, frozen FROM globals;
         assert max(regions.values()) < 64, str(regions)
     app['regions'] = regions
 
-    fs = get_cloud_async_fs(credentials_file='/gsa-key/key.json')
+    fs = get_cloud_async_fs()
     app['file_store'] = FileStore(fs, BATCH_STORAGE_URI, instance_id)
 
     app['inst_coll_configs'] = await InstanceCollectionConfigs.create(db)
@@ -2838,6 +2940,8 @@ async def on_cleanup(app):
 
 
 def run():
+    install_profiler_if_requested('batch')
+
     app = web.Application(
         client_max_size=HTTP_CLIENT_MAX_SIZE, middlewares=[unavailable_if_frozen, monitor_endpoints_middleware]
     )
@@ -2856,7 +2960,7 @@ def run():
     web.run_app(
         deploy_config.prefix_application(app, 'batch', client_max_size=HTTP_CLIENT_MAX_SIZE),
         host='0.0.0.0',
-        port=443,
+        port=int(os.environ['PORT']),
         access_log_class=BatchFrontEndAccessLogger,
         ssl_context=internal_server_ssl_context(),
     )
