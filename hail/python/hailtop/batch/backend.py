@@ -206,8 +206,8 @@ class LocalBackend(Backend[None]):
                     assert r._input_path
                     input_scheme = url_scheme(r._input_path)
                     if input_scheme != '':
-                        log.info(f"from: {r._input_path}")
-                        log.info(f"to: {r._get_path(tmpdir)}")
+                        log.warn(f"from: {r._input_path}")
+                        log.warn(f"to: {r._get_path(tmpdir)}")
                         transfers_bytes = orjson.dumps([{"from": r._input_path, "to": r._get_path(tmpdir)}])
                         transfers = transfers_bytes.decode('utf-8')
                         return [f'python3 -m hailtop.aiotools.copy {shq(requester_pays_project_json)} {shq(transfers)}']

@@ -12,6 +12,9 @@ from ..weighted_semaphore import WeightedSemaphore
 from .exceptions import FileAndDirectoryError, UnexpectedEOFError
 from .fs import MultiPartCreate, FileStatus, AsyncFS, FileListEntry
 
+import logging
+log = logging.getLogger(__name__)
+
 
 class Transfer:
     DEST_DIR = 'dest_dir'
@@ -309,6 +312,8 @@ class SourceCopier:
         else:
             dest_type = None
 
+        log.warn(f"dest_type: {dest_type}")
+
         if (self.treat_dest_as == Transfer.DEST_DIR
                 or (self.treat_dest_as == Transfer.INFER_DEST
                     and dest_type == AsyncFS.DIR)):
@@ -350,6 +355,7 @@ class SourceCopier:
         if full_dest_type == AsyncFS.DIR:
             raise IsADirectoryError(full_dest)
 
+        log.warn(f"copy_as_file: {full_dest}")
         await self._copy_file_multi_part(sema, source_report, src, srcstat, full_dest, return_exceptions)
 
     async def copy_as_dir(self, sema: asyncio.Semaphore, source_report: SourceReport, return_exceptions: bool):
@@ -392,6 +398,7 @@ class SourceCopier:
             relsrcfile = srcfile[len(src):]
             assert not relsrcfile.startswith('/')
 
+            log.warn(f"copy_as_dir: {full_dest}|{relsrcfile}")
             await self._copy_file_multi_part(sema, source_report, srcfile, await srcentry.status(), url_join(full_dest, relsrcfile), return_exceptions)
 
         async def create_copies() -> List[Callable[[], Awaitable[None]]]:
