@@ -398,7 +398,7 @@ class SourceCopier:
             relsrcfile = srcfile[len(src):]
             assert not relsrcfile.startswith('/')
 
-            log.warn(f"copy_as_dir: {full_dest}|{relsrcfile}")
+            log.warn(f"copy_as_dir: {full_dest} / {relsrcfile}")
             await self._copy_file_multi_part(sema, source_report, srcfile, await srcentry.status(), url_join(full_dest, relsrcfile), return_exceptions)
 
         async def create_copies() -> List[Callable[[], Awaitable[None]]]:
