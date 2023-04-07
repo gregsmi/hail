@@ -103,7 +103,7 @@ async def main() -> None:
     parser.add_argument('--max-simultaneous-transfers', type=int,
                         help='The limit on the number of simultaneous transfers. Large files are uploaded as multiple transfers. This parameter sets an upper bound on the number of open source and destination files.')
     parser.add_argument('-v', '--verbose', action='store_const',
-                        const=True, default=True,
+                        const=True, default=False,
                         help='show logging information')
     args = parser.parse_args()
 

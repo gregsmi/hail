@@ -15,6 +15,8 @@ from hailtop.config import configuration_of
 from . import backend as _backend, job, resource as _resource  # pylint: disable=cyclic-import
 from .exceptions import BatchException
 
+import logging
+log = logging.getLogger(__name__)
 
 class Batch:
     """
@@ -402,8 +404,8 @@ class Batch:
         root = root or secret_alnum_string(6)
         # Take care not to include a SAS token query string in the local name.
         file_name, _ = AzureAsyncFS.get_name_parts(input_path.rstrip("/"))
-        print(f'input_path: {input_path}')
-        print(f'name: {os.path.basename(file_name)}')
+        log.info(f'input_path: {input_path}')
+        log.info(f'name: {os.path.basename(file_name)}')
         irf = _resource.InputResourceFile(f'{root}/{os.path.basename(file_name)}')
         irf._add_input_path(input_path)
         self._resource_map[irf._uid] = irf  # pylint: disable=no-member

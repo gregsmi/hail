@@ -28,6 +28,8 @@ from . import resource, batch, job as _job  # pylint: disable=unused-import
 from .exceptions import BatchException
 from .globals import DEFAULT_SHELL
 
+import logging
+log = logging.getLogger(__name__)
 
 HAIL_GENETICS_HAILTOP_IMAGE = os.environ.get('HAIL_GENETICS_HAILTOP_IMAGE', f'hailgenetics/hailtop:{pip_version()}')
 
@@ -204,8 +206,8 @@ class LocalBackend(Backend[None]):
                     assert r._input_path
                     input_scheme = url_scheme(r._input_path)
                     if input_scheme != '':
-                        print(f"from: {r._input_path}")
-                        print(f"to: {r._get_path(tmpdir)}")
+                        log.info(f"from: {r._input_path}")
+                        log.info(f"to: {r._get_path(tmpdir)}")
                         transfers_bytes = orjson.dumps([{"from": r._input_path, "to": r._get_path(tmpdir)}])
                         transfers = transfers_bytes.decode('utf-8')
                         return [f'python3 -m hailtop.aiotools.copy {shq(requester_pays_project_json)} {shq(transfers)}']
