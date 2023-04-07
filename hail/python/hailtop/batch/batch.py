@@ -401,7 +401,7 @@ class Batch:
 
     def _new_input_resource_file(self, input_path, root=None):
         self._backend.validate_file_scheme(input_path)
-        root = root or secret_alnum_string(6)
+        root = root or secret_alnum_string(5)
         # Take care not to include a SAS token query string in the local name.
         file_name, _ = AzureAsyncFS.get_name_parts(input_path.rstrip("/"))
         log.warn(f'input_path: {input_path}')
