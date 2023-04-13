@@ -1,7 +1,7 @@
 import asyncio
 import os
 import secrets
-from typing import Any, AsyncGenerator, Awaitable, Callable, Optional
+from typing import Any, AsyncGenerator, Awaitable, Callable, List, Optional, Tuple
 
 import aiohttp
 import orjson
@@ -14,10 +14,9 @@ from hailtop.utils import secret_alnum_string
 from hailtop.utils.rich_progress_bar import BatchProgressBar
 
 from .billing_projects import get_billing_project_prefix
+from .utils import DOCKER_ROOT_IMAGE
 
 pytestmark = pytest.mark.asyncio
-
-DOCKER_ROOT_IMAGE = os.environ['DOCKER_ROOT_IMAGE']
 
 
 @pytest.fixture
@@ -450,7 +449,7 @@ async def test_billing_limit_tiny(
     assert batch_status['state'] == 'cancelled', str(await batch.debug_info())
 
 
-async def search_batches(client, expected_batch_id, q):
+async def search_batches(client, expected_batch_id, q) -> Tuple[bool, List[int]]:
     found = False
     batches = [x async for x in client.list_batches(q=q, last_batch_id=expected_batch_id + 1, limit=200)]
     for batch in batches:
