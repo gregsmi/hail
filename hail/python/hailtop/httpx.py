@@ -1,4 +1,5 @@
 from typing import Any, Tuple, Optional, Type, TypeVar, Generic, Callable, Union
+import asyncio
 from types import TracebackType
 import orjson
 import aiohttp
@@ -159,6 +160,18 @@ class ClientSession:
     ) -> aiohttp.client._RequestContextManager:
         return self.request('GET', url, allow_redirects=allow_redirects, **kwargs)
 
+    async def get_read_json(
+        self, *args, **kwargs
+    ) -> Any:
+        async with self.get(*args, **kwargs) as resp:
+            return await resp.json()
+
+    async def get_read(
+        self, *args, **kwargs
+    ) -> bytes:
+        async with self.get(*args, **kwargs) as resp:
+            return await resp.read()
+
     def options(
         self, url: aiohttp.client.StrOrURL, *, allow_redirects: bool = True, **kwargs: Any
     ) -> aiohttp.client._RequestContextManager:
@@ -173,6 +186,18 @@ class ClientSession:
         self, url: aiohttp.client.StrOrURL, *, data: Any = None, **kwargs: Any
     ) -> aiohttp.client._RequestContextManager:
         return self.request('POST', url, data=data, **kwargs)
+
+    async def post_read_json(
+        self, *args, **kwargs
+    ) -> Any:
+        async with self.post(*args, **kwargs) as resp:
+            return await resp.json()
+
+    async def post_read(
+        self, *args, **kwargs
+    ) -> bytes:
+        async with self.post(*args, **kwargs) as resp:
+            return await resp.read()
 
     def put(
         self, url: aiohttp.client.StrOrURL, *, data: Any = None, **kwargs: Any
@@ -191,6 +216,9 @@ class ClientSession:
 
     async def close(self) -> None:
         await self.client_session.close()
+        # - Following warning mitigation described here: https://github.com/aio-libs/aiohttp/pull/2045
+        # - Fixed in aiohttp 4.0.0: https://github.com/aio-libs/aiohttp/issues/1925
+        await asyncio.sleep(0.250)
 
     @property
     def closed(self) -> bool:
