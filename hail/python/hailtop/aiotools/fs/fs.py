@@ -49,7 +49,7 @@ class FileListEntry(abc.ABC):
     async def url_maybe_trailing_slash(self) -> str:
         return await self.url()
 
-    async def url_with_query(self) -> str:
+    async def url_full(self) -> str:
         return await self.url()
 
     @abc.abstractmethod
@@ -124,6 +124,11 @@ class AsyncFS(abc.ABC):
     @property
     @abc.abstractmethod
     def schemes(self) -> Set[str]:
+        pass
+
+    @staticmethod
+    @abc.abstractmethod
+    def valid_url(url: str) -> bool:
         pass
 
     @abc.abstractmethod
@@ -241,14 +246,14 @@ class AsyncFS(abc.ABC):
                      url: str,
                      listener: Optional[Callable[[int], None]] = None) -> None:
         if listener is None:
-            listener = lambda _: None  # noqa: E731
+            listener = lambda _: None
         if sema is None:
             sema = asyncio.Semaphore(50)
 
         async def rm(entry: FileListEntry):
             assert listener is not None
             listener(1)
-            await self._remove_doesnt_exist_ok(await entry.url_with_query())
+            await self._remove_doesnt_exist_ok(await entry.url_full())
             listener(-1)
 
         try:

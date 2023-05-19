@@ -139,7 +139,7 @@ class FQBranch:
         assert len(pieces) == 2, f'{pieces} {s}'
         return FQBranch(Repo.from_short_str(pieces[0]), pieces[1])
 
-    def short_str(self):
+    def short_str(self) -> str:
         return f'{self.repo.short_str()}:{self.name}'
 
     @staticmethod
@@ -162,7 +162,7 @@ class FQBranch:
 
 # record the context for a merge failure
 class MergeFailureBatch:
-    def __init__(self, exception, attributes=None):
+    def __init__(self, exception: BaseException, attributes: Dict[str, str]):
         self.exception = exception
         self.attributes = attributes
 
@@ -516,6 +516,7 @@ mkdir -p {shq(repo_dir)}
             raise
         except Exception as e:  # pylint: disable=broad-except
             # FIXME save merge failure output for UI
+            assert self.target_branch.sha is not None
             self.batch = MergeFailureBatch(
                 e,
                 attributes={
@@ -890,6 +891,7 @@ url: {url}
         self.deploy_state = None
 
         deploy_batch = None
+        assert self.sha is not None
         try:
             repo_dir = self.repo_dir()
             await check_shell(
