@@ -554,7 +554,7 @@ async def test_listfiles(filesystem: Tuple[asyncio.Semaphore, AsyncFS, AsyncFSUR
     await fs.touch(c)
 
     async def listfiles(dir, recursive):
-        return {(await entry.url_with_query(), await entry.is_file()) async for entry in await fs.listfiles(dir, recursive)}
+        return {(await entry.url_full(), await entry.is_file()) async for entry in await fs.listfiles(dir, recursive)}
 
     foo = str(base.with_new_path_component('foo/'))
     assert await listfiles(foo, recursive=True) == {(a, True), (c, True)}
