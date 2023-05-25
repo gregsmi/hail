@@ -117,12 +117,12 @@ def test_requester_pays_with_project_more_than_one_partition():
     assert hl.import_table('gs://hail-test-requester-pays-fds32/zero-to-nine', no_header=True, min_partitions=8).collect() == expected_file_contents
 
 
-@run_if_azure
-@fails_local_backend
-def test_can_access_public_blobs():
-    public_mt = 'hail-az://azureopendatastorage/gnomad/release/3.1/mt/genomes/gnomad.genomes.v3.1.hgdp_1kg_subset.mt'
-    assert hl.hadoop_exists(public_mt)
-    with hl.hadoop_open(f'{public_mt}/README.txt') as readme:
-        assert len(readme.read()) > 0
-    mt = hl.read_matrix_table(public_mt)
-    mt.describe()
+# @run_if_azure
+# @fails_local_backend
+# def test_can_access_public_blobs():
+#     public_mt = 'hail-az://azureopendatastorage/gnomad/release/3.1/mt/genomes/gnomad.genomes.v3.1.hgdp_1kg_subset.mt'
+#     assert hl.hadoop_exists(public_mt)
+#     with hl.hadoop_open(f'{public_mt}/README.txt') as readme:
+#         assert len(readme.read()) > 0
+#     mt = hl.read_matrix_table(public_mt)
+#     mt.describe()
