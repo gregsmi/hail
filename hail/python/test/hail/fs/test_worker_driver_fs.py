@@ -1,9 +1,12 @@
+import asyncio
+import os
+
 import hail as hl
-import pytest
 from hailtop.utils import secret_alnum_string
 from hailtop.test_utils import skip_in_azure, run_if_azure
+from hailtop.aiocloud.aioazure import AzureAsyncFS
 
-from ..helpers import fails_local_backend, hl_stop_for_test, hl_init_for_test, test_timeout
+from ..helpers import fails_local_backend, hl_stop_for_test, hl_init_for_test, test_timeout, resource
 
 
 @skip_in_azure
@@ -120,12 +123,26 @@ def test_requester_pays_with_project_more_than_one_partition():
     assert hl.import_table('gs://hail-test-requester-pays-fds32/zero-to-nine', no_header=True, min_partitions=8).collect() == expected_file_contents
 
 
-# @run_if_azure
-# @fails_local_backend
-# def test_can_access_public_blobs():
-#     public_mt = 'hail-az://azureopendatastorage/gnomad/release/3.1/mt/genomes/gnomad.genomes.v3.1.hgdp_1kg_subset.mt'
-#     assert hl.hadoop_exists(public_mt)
-#     with hl.hadoop_open(f'{public_mt}/README.txt') as readme:
-#         assert len(readme.read()) > 0
-#     mt = hl.read_matrix_table(public_mt)
-#     mt.describe()
+@run_if_azure
+@fails_local_backend
+def test_can_access_public_blobs():
+    public_mt = 'hail-az://azureopendatastorage/gnomad/release/3.1/mt/genomes/gnomad.genomes.v3.1.hgdp_1kg_subset.mt'
+    assert hl.hadoop_exists(public_mt)
+    with hl.hadoop_open(f'{public_mt}/README.txt') as readme:
+        assert len(readme.read()) > 0
+    mt = hl.read_matrix_table(public_mt)
+    mt.describe()
+
+@run_if_azure
+@fails_local_backend
+def test_qob_can_use_sas_tokens():
+    vcf = resource('sample.vcf')
+    account = AzureAsyncFS.parse_url(vcf).account
+
+    sub_id = os.environ['HAIL_AZURE_SUBSCRIPTION_ID']
+    rg = os.environ['HAIL_AZURE_RESOURCE_GROUP']
+    creds_file = os.environ['AZURE_APPLICATION_CREDENTIALS']
+    sas_token = asyncio.run(AzureAsyncFS(credential_file=creds_file).generate_sas_token(sub_id, rg, account, "rl"))
+
+    mt = hl.import_vcf(f'{vcf}?{sas_token}', min_partitions=4)
+    mt._force_count_rows()

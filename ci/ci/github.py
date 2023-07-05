@@ -39,7 +39,7 @@ zulip_client: Optional[zulip.Client] = None
 
 TRACKED_PRS = pc.Gauge('ci_tracked_prs', 'PRs currently being monitored by CI', ['build_state', 'review_state'])
 
-MAX_CONCURRENT_PR_BATCHES = 6
+MAX_CONCURRENT_PR_BATCHES = 3
 
 
 class GithubStatus(Enum):
@@ -52,10 +52,29 @@ def select_random_teammate(team):
     return random.choice([user for user in AUTHORIZED_USERS if team in user.teams])
 
 
-def send_zulip_deploy_failure_message(message):
+async def sha_already_alerted(db: Database, sha: str) -> bool:
+    record = await db.select_and_fetchone(
+        '''
+SELECT sha
+FROM alerted_failed_shas
+WHERE sha = %s
+''',
+        (sha,),
+    )
+    return record is not None
+
+
+async def send_zulip_deploy_failure_message(message: str, db: Database, sha: Optional[str]):
     if zulip_client is None:
         log.info('Zulip integration is not enabled. No config file found')
         return
+
+    if sha is not None:
+        alerted = await sha_already_alerted(db, sha)
+        if alerted:
+            log.info(f'Already alerted failure to Zulip for sha {sha}')
+            return
+
     request = {
         'type': 'stream',
         'to': 'team',
@@ -64,6 +83,14 @@ def send_zulip_deploy_failure_message(message):
     }
     result = zulip_client.send_message(request)
     log.info(result)
+
+    if sha is not None:
+        await db.execute_insertone(
+            '''
+INSERT INTO alerted_failed_shas (sha) VALUES (%s)
+''',
+            (sha,),
+        )
 
 
 class Repo:
@@ -661,6 +688,8 @@ class WatchedBranch(Code):
 
         self.n_running_batches: int = 0
 
+        self.merge_candidate: Optional[PR] = None
+
     @property
     def deploy_state(self):
         return self._deploy_state
@@ -742,6 +771,7 @@ class WatchedBranch(Code):
                     self.github_changed = True
                     self.sha = None
                     self.state_changed = True
+                    self.merge_candidate = None
                     return
 
     async def _update_github(self, gh):
@@ -776,7 +806,7 @@ class WatchedBranch(Code):
         for pr in new_prs.values():
             await pr._update_github(gh)
 
-    async def _update_deploy(self, batch_client):
+    async def _update_deploy(self, batch_client, db: Database):
         assert self.deployable
 
         if self.deploy_state:
@@ -822,7 +852,7 @@ branch: {self.branch.short_str()}
 sha: {self.sha}
 url: {url}
 '''
-                    send_zulip_deploy_failure_message(deploy_failure_message)
+                    await send_zulip_deploy_failure_message(deploy_failure_message, db, self.sha)
                 self.state_changed = True
 
     async def _heal_deploy(self, app, batch_client):
@@ -841,7 +871,7 @@ url: {url}
         log.info(f'update batch {self.short_str()}')
 
         if self.deployable:
-            await self._update_deploy(batch_client)
+            await self._update_deploy(batch_client, db)
 
         for pr in self.prs.values():
             await pr._update_batch(batch_client, db)
@@ -864,6 +894,9 @@ url: {url}
                 if is_authorized and (not merge_candidate or pri > merge_candidate_pri):
                     merge_candidate = pr
                     merge_candidate_pri = pri
+
+        self.merge_candidate = merge_candidate
+
         if merge_candidate:
             log.info(f'merge candidate {merge_candidate.number}')
 
@@ -932,7 +965,7 @@ Deploy config failed to build with exception:
 {e}
 ```
 '''
-                send_zulip_deploy_failure_message(deploy_failure_message)
+                await send_zulip_deploy_failure_message(deploy_failure_message, db, self.sha)
                 raise
             deploy_batch = await deploy_batch.submit()
             self.deploy_batch = deploy_batch

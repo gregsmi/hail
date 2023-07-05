@@ -30,7 +30,6 @@ object TypeCheck {
   def check(ctx: ExecuteContext, ir: BaseIR, env: BindingEnv[Type]): StackFrame[Unit] = {
     for {
       _ <- ir.children
-        .iterator
         .zipWithIndex
         .foreachRecur { case (child, i) =>
           for {
@@ -268,6 +267,10 @@ object TypeCheck {
         val ndType = nd.typ.asInstanceOf[TNDArray]
         assert(ndType.elementType == TFloat64)
         assert(ndType.nDims == 2)
+      case x@NDArrayEigh(nd, _, _) =>
+        val ndType = nd.typ.asInstanceOf[TNDArray]
+        assert(ndType.elementType == TFloat64)
+        assert(ndType.nDims == 2)
       case x@NDArrayInv(nd, _) =>
         val ndType = nd.typ.asInstanceOf[TNDArray]
         assert(ndType.elementType == TFloat64)
@@ -336,6 +339,12 @@ object TypeCheck {
       case x@StreamZipJoin(as, key, curKey, curVals, joinF) =>
         val streamType = tcoerce[TStream](as.head.typ)
         assert(as.forall(_.typ == streamType))
+        val eltType = tcoerce[TStruct](streamType.elementType)
+        assert(key.forall(eltType.hasField))
+        assert(x.typ.elementType == joinF.typ)
+      case x@StreamZipJoinProducers(contexts, ctxName, makeProducer, key, curKey, curVals, joinF) =>
+        assert(contexts.typ.isInstanceOf[TArray])
+        val streamType = tcoerce[TStream](makeProducer.typ)
         val eltType = tcoerce[TStruct](streamType.elementType)
         assert(key.forall(eltType.hasField))
         assert(x.typ.elementType == joinF.typ)

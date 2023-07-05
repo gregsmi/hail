@@ -11,11 +11,11 @@ class NormalizeNames(normFunction: Int => String, allowFreeVariables: Boolean = 
     normFunction(count)
   }
 
-  def apply(ir: IR, env: Env[String]): IR = apply(ir, BindingEnv(env))
+  def apply(ir: IR, env: Env[String]): IR = apply(ir.noSharing, BindingEnv(env))
 
-  def apply(ir: IR, env: BindingEnv[String]): IR = normalizeIR(ir, env).run().asInstanceOf[IR]
+  def apply(ir: IR, env: BindingEnv[String]): IR = normalizeIR(ir.noSharing, env).run().asInstanceOf[IR]
 
-  def apply(ir: BaseIR): BaseIR = normalizeIR(ir, BindingEnv(agg=Some(Env.empty), scan=Some(Env.empty))).run()
+  def apply(ir: BaseIR): BaseIR = normalizeIR(ir.noSharing, BindingEnv(agg=Some(Env.empty), scan=Some(Env.empty))).run()
 
   private def normalizeIR(ir: BaseIR, env: BindingEnv[String], context: Array[String] = Array()): StackFrame[BaseIR] = {
 
@@ -98,6 +98,15 @@ class NormalizeNames(normFunction: Int => String, allowFreeVariables: Boolean = 
           newAs <- as.mapRecur(normalize(_))
           newJoinF <- normalize(joinF, env.bindEval(curKey -> newCurKey, curVals -> newCurVals))
         } yield StreamZipJoin(newAs, key, newCurKey, newCurVals, newJoinF)
+      case StreamZipJoinProducers(contexts, ctxName, makeProducer, key, curKey, curVals, joinF) =>
+        val newCtxName = gen()
+        val newCurKey = gen()
+        val newCurVals = gen()
+        for {
+          newCtxs <- normalize(contexts)
+          newMakeProducer <- normalize(makeProducer, env.bindEval(ctxName -> newCtxName))
+          newJoinF <- normalize(joinF, env.bindEval(curKey -> newCurKey, curVals -> newCurVals))
+        } yield StreamZipJoinProducers(newCtxs, newCtxName, newMakeProducer, key, newCurKey, newCurVals, newJoinF)
       case StreamFilter(a, name, body) =>
         val newName = gen()
         for {
@@ -237,12 +246,9 @@ class NormalizeNames(normFunction: Int => String, allowFreeVariables: Boolean = 
           newBody <- normalize(body)
         } yield RelationalLet(name, newValue, newBody)
       case x =>
-        for {
-          newChildren <- x.children.iterator.zipWithIndex.map { case (child, i) =>
-            normalizeBaseIR(child, ChildBindings.transformed(x, i, env, { case (name, _) => name }))
-          }.collectRecur
-        } yield x.copy(newChildren)
-
+        x.mapChildrenWithIndexStackSafe { (child, i) =>
+          normalizeBaseIR(child, ChildBindings.transformed(x, i, env, { case (name, _) => name }))
+        }
     }
   }
 }

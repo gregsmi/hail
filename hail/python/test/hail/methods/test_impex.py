@@ -370,36 +370,14 @@ class VCFTests(unittest.TestCase):
         path = resource('sample.vcf.bgz')
         self.import_gvcfs_sample_vcf(path)
 
-    @fails_service_backend()
-    @fails_local_backend()
-    def test_import_gvcfs_subset(self):
-        path = resource('sample.vcf.bgz')
-        parts = [
-            hl.Interval(start=hl.Struct(locus=hl.Locus('20', 13509136)),
-                        end=hl.Struct(locus=hl.Locus('20', 16493533)),
-                        includes_end=True)
-        ]
-        vcf1 = hl.import_vcf(path).key_rows_by('locus')
-        vcf2 = hl.import_gvcfs([path], parts)[0]
-        interval = [hl.parse_locus_interval('[20:13509136-16493533]')]
-        filter1 = hl.filter_intervals(vcf1, interval)
-        self.assertTrue(vcf2._same(filter1))
-        self.assertEqual(len(parts), vcf2.n_partitions())
-
-    @fails_service_backend()
-    @fails_local_backend()
     def test_import_gvcfs_long_line(self):
         import bz2
+        fs = hl.current_backend().fs
         path = resource('gvcfs/long_line.g.vcf.gz')
-        parts = [
-            hl.Interval(start=hl.Struct(locus=hl.Locus('1', 1)),
-                        end=hl.Struct(locus=hl.Locus('1', 1_000_000)),
-                        includes_end=True)
-        ]
-        [vcf] = hl.import_gvcfs([path], parts)
+        vcf = hl.import_vcf(path, force_bgz=True)
         [data] = vcf.info.Custom.collect()
-        with bz2.open(resource('gvcfs/long_line.ref.bz2')) as ref:
-            ref_str = ref.read().decode('utf-8')
+        with fs.open(resource('gvcfs/long_line.ref.bz2'), 'rb') as ref:
+            ref_str = bz2.open(ref).read().decode('utf-8')
             self.assertEqual(ref_str, data)
 
     def test_vcf_parser_golden_master__ex_GRCh37(self):
@@ -421,62 +399,24 @@ class VCFTests(unittest.TestCase):
         mt = hl.read_matrix_table(vcf_path + '.mt')
         self.assertTrue(mt._same(vcf))
 
-    @fails_service_backend()
-    @fails_local_backend()
-    def test_import_multiple_vcfs(self):
-        _paths = ['gvcfs/HG00096.g.vcf.gz', 'gvcfs/HG00268.g.vcf.gz']
-        paths = [resource(p) for p in _paths]
-        parts = [
-            hl.Interval(start=hl.Struct(locus=hl.Locus('chr20', 17821257, reference_genome='GRCh38')),
-                        end=hl.Struct(locus=hl.Locus('chr20', 18708366, reference_genome='GRCh38')),
-                        includes_end=True),
-            hl.Interval(start=hl.Struct(locus=hl.Locus('chr20', 18708367, reference_genome='GRCh38')),
-                        end=hl.Struct(locus=hl.Locus('chr20', 19776611, reference_genome='GRCh38')),
-                        includes_end=True),
-            hl.Interval(start=hl.Struct(locus=hl.Locus('chr20', 19776612, reference_genome='GRCh38')),
-                        end=hl.Struct(locus=hl.Locus('chr20', 21144633, reference_genome='GRCh38')),
-                        includes_end=True)
-        ]
-        int0 = hl.parse_locus_interval('[chr20:17821257-18708366]', reference_genome='GRCh38')
-        int1 = hl.parse_locus_interval('[chr20:18708367-19776611]', reference_genome='GRCh38')
-        hg00096, hg00268 = hl.import_gvcfs(paths, parts, reference_genome='GRCh38')
-        filt096 = hl.filter_intervals(hg00096, [int0])
-        filt268 = hl.filter_intervals(hg00268, [int1])
-        self.assertEqual(1, filt096.n_partitions())
-        self.assertEqual(1, filt268.n_partitions())
-        pos096 = set(filt096.locus.position.collect())
-        pos268 = set(filt268.locus.position.collect())
-        self.assertFalse(pos096 & pos268)
-
-    @fails_service_backend()
-    @fails_local_backend()
     def test_combiner_works(self):
-        from hail.experimental.vcf_combiner.vcf_combiner import transform_one, combine_gvcfs
+        from hail.vds.combiner.combine import transform_gvcf, combine_variant_datasets
         _paths = ['gvcfs/HG00096.g.vcf.gz', 'gvcfs/HG00268.g.vcf.gz']
         paths = [resource(p) for p in _paths]
-        parts = [
-            hl.Interval(start=hl.Struct(locus=hl.Locus('chr20', 17821257, reference_genome='GRCh38')),
-                        end=hl.Struct(locus=hl.Locus('chr20', 18708366, reference_genome='GRCh38')),
-                        includes_end=True),
-            hl.Interval(start=hl.Struct(locus=hl.Locus('chr20', 18708367, reference_genome='GRCh38')),
-                        end=hl.Struct(locus=hl.Locus('chr20', 19776611, reference_genome='GRCh38')),
-                        includes_end=True),
-            hl.Interval(start=hl.Struct(locus=hl.Locus('chr20', 19776612, reference_genome='GRCh38')),
-                        end=hl.Struct(locus=hl.Locus('chr20', 21144633, reference_genome='GRCh38')),
-                        includes_end=True)
-        ]
-        vcfs = [transform_one(mt.annotate_rows(info=mt.info.annotate(
-            MQ_DP=hl.missing(hl.tint32),
-            VarDP=hl.missing(hl.tint32),
-            QUALapprox=hl.missing(hl.tint32))))
-                for mt in hl.import_gvcfs(paths, parts, reference_genome='GRCh38',
-                                         array_elements_required=False)]
-        comb = combine_gvcfs(vcfs)
-        self.assertEqual(len(parts), comb.n_partitions())
-        comb._force_count_rows()
+        vdses = []
+        for path in paths:
+            mt = hl.import_vcf(path, reference_genome='GRCh38', array_elements_required=False, force_bgz=True)
+            mt = transform_gvcf(mt.annotate_rows(info=mt.info.annotate(
+                MQ_DP=hl.missing(hl.tint32),
+                VarDP=hl.missing(hl.tint32),
+                QUALapprox=hl.missing(hl.tint32))), reference_entry_fields_to_keep=[])
+            vdses.append(mt)
+        comb = combine_variant_datasets(vdses)
+        assert comb.reference_data._force_count_rows() == 458646
+        assert comb.variant_data._force_count_rows() == 14346
 
     def test_haploid_combiner_ok(self):
-        from hail.experimental.vcf_combiner.vcf_combiner import transform_gvcf
+        from hail.vds.combiner.combine import transform_gvcf
         # make a combiner table
         mt = hl.utils.range_matrix_table(2, 1)
         mt = mt.annotate_cols(s='S01')
@@ -492,10 +432,12 @@ class VCFTests(unittest.TestCase):
         mt = mt.annotate_rows(info=hl.struct(END=mt.locus.position))
         mt = mt.annotate_rows(rsid=hl.missing(hl.tstr))
         mt = mt.drop('row_idx')
-        transform_gvcf(mt)._force_count()
+        vds = transform_gvcf(mt, [])
+        vds.reference_data._force_count_rows()
+        vds.variant_data._force_count_rows()
 
     def test_combiner_parse_as_annotations(self):
-        from hail.experimental.vcf_combiner.vcf_combiner import parse_as_fields
+        from hail.vds.combiner.combine import parse_as_fields
         infos = hl.array([
             hl.struct(
                 AS_QUALapprox="|1171|",
@@ -903,14 +845,13 @@ class PLINKTests(unittest.TestCase):
 
         self.assertTrue(same)
 
-    def test_export_plink_exprs(self):
+    def test_export_plink_default_arguments(self):
         ds = get_dataset()
         fam_mapping = {'f0': 'fam_id', 'f1': 'ind_id', 'f2': 'pat_id', 'f3': 'mat_id',
                        'f4': 'is_female', 'f5': 'pheno'}
         bim_mapping = {'f0': 'contig', 'f1': 'varid', 'f2': 'cm_position',
                        'f3': 'position', 'f4': 'a1', 'f5': 'a2'}
 
-        # Test default arguments
         out1 = new_temp_file()
         hl.export_plink(ds, out1)
         fam1 = (hl.import_table(out1 + '.fam', no_header=True, impute=False, missing="")
@@ -924,7 +865,11 @@ class PLINKTests(unittest.TestCase):
         self.assertTrue(bim1.all((bim1.varid == bim1.contig + ":" + bim1.position + ":" + bim1.a2 + ":" + bim1.a1) &
                                  (bim1.cm_position == "0.0")))
 
-        # Test non-default FAM arguments
+    def test_export_plink_non_default_arguments(self):
+        ds = get_dataset()
+        fam_mapping = {'f0': 'fam_id', 'f1': 'ind_id', 'f2': 'pat_id', 'f3': 'mat_id',
+                       'f4': 'is_female', 'f5': 'pheno'}
+
         out2 = new_temp_file()
         hl.export_plink(ds, out2, ind_id=ds.s, fam_id=ds.s, pat_id="nope",
                         mat_id="nada", is_female=True, pheno=False)
@@ -935,7 +880,12 @@ class PLINKTests(unittest.TestCase):
                                  (fam2.mat_id == "nada") & (fam2.is_female == "2") &
                                  (fam2.pheno == "1")))
 
-        # Test quantitative phenotype
+    def test_export_plink_quantitative_phenotype(self):
+        ds = get_dataset()
+        fam_mapping = {'f0': 'fam_id', 'f1': 'ind_id', 'f2': 'pat_id', 'f3': 'mat_id',
+                       'f4': 'is_female', 'f5': 'pheno'}
+        bim_mapping = {'f0': 'contig', 'f1': 'varid', 'f2': 'cm_position',
+                       'f3': 'position', 'f4': 'a1', 'f5': 'a2'}
         out3 = new_temp_file()
         hl.export_plink(ds, out3, ind_id=ds.s, pheno=hl.float64(hl.len(ds.s)))
         fam3 = (hl.import_table(out3 + '.fam', no_header=True, impute=False, missing="")
@@ -945,7 +895,10 @@ class PLINKTests(unittest.TestCase):
                                  (fam3.mat_id == "0") & (fam3.is_female == "0") &
                                  (fam3.pheno != "0") & (fam3.pheno != "NA")))
 
-        # Test non-default BIM arguments
+    def test_export_plink_non_default_bim_arguments(self):
+        ds = get_dataset()
+        bim_mapping = {'f0': 'contig', 'f1': 'varid', 'f2': 'cm_position',
+                       'f3': 'position', 'f4': 'a1', 'f5': 'a2'}
         out4 = new_temp_file()
         hl.export_plink(ds, out4, varid="hello", cm_position=100)
         bim4 = (hl.import_table(out4 + '.bim', no_header=True, impute=False)
@@ -953,7 +906,8 @@ class PLINKTests(unittest.TestCase):
 
         self.assertTrue(bim4.all((bim4.varid == "hello") & (bim4.cm_position == "100.0")))
 
-        # Test call expr
+    def test_export_plink_call_expression(self):
+        ds = get_dataset()
         out5 = new_temp_file()
         ds_call = ds.annotate_entries(gt_fake=hl.call(0, 0))
         hl.export_plink(ds_call, out5, call=ds_call.gt_fake)
@@ -961,11 +915,13 @@ class PLINKTests(unittest.TestCase):
         nerrors = ds_all_hom_ref.aggregate_entries(hl.agg.count_where(~ds_all_hom_ref.GT.is_hom_ref()))
         self.assertTrue(nerrors == 0)
 
-        # Test white-space in FAM id expr raises error
+    def test_export_plink_white_space_in_fam_id_raises_error(self):
+        ds = get_dataset()
         with self.assertRaisesRegex(TypeError, "has spaces in the following values:"):
             hl.export_plink(ds, new_temp_file(), mat_id="hello world")
 
-        # Test white-space in varid expr raises error
+    def test_export_plink_white_space_in_varid_raises_error(self):
+        ds = get_dataset()
         with self.assertRaisesRegex(FatalError, "no white space allowed:"):
             hl.export_plink(ds, new_temp_file(), varid="hello world")
 

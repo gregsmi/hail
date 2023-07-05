@@ -23,7 +23,6 @@ object NestingDepth {
 
     def computeChildren(ir: BaseIR): Unit = {
       ir.children
-        .iterator
         .zipWithIndex
         .foreach {
           case (child: IR, i) => computeIR(child, ScopedDepth(0, 0, 0))
@@ -40,14 +39,34 @@ object NestingDepth {
     def computeBlockMatrix(bmir: BlockMatrixIR): Unit = computeChildren(bmir)
 
     def computeIR(ir: IR, depth: ScopedDepth): Unit = {
-      memo.bind(ir, depth.eval)
+      ir match {
+        case x@AggLet(_, _, _, false) =>
+          memo.bind(x, depth.agg)
+        case x@AggLet(_, _, _, true) =>
+          memo.bind(x, depth.scan)
+        case _ =>
+          memo.bind(ir, depth.eval)
+      }
       ir match {
         case StreamMap(a, name, body) =>
           computeIR(a, depth)
           computeIR(body, depth.incrementEval)
+        case StreamAgg(a, name, body) =>
+          computeIR(a, depth)
+          computeIR(body, ScopedDepth(depth.eval, depth.eval + 1, depth.scan))
+        case StreamAggScan(a, name, body) =>
+          computeIR(a, depth)
+          computeIR(body, ScopedDepth(depth.eval, depth.agg, depth.eval + 1))
         case StreamZip(as, _, body, _, _) =>
           as.foreach(computeIR(_, depth))
           computeIR(body, depth.incrementEval)
+        case StreamZipJoin(as, _, _, _, joinF) =>
+          as.foreach(computeIR(_, depth))
+          computeIR(joinF, depth.incrementEval)
+        case StreamZipJoinProducers(contexts, _, makeProducer, _, _, _, joinF) =>
+          computeIR(contexts, depth)
+          computeIR(makeProducer, depth.incrementEval)
+          computeIR(joinF, depth.incrementEval)
         case StreamFor(a, valueName, body) =>
           computeIR(a, depth)
           computeIR(body, depth.incrementEval)
@@ -104,7 +123,7 @@ object NestingDepth {
           computeMatrix(child)
           computeIR(query, ScopedDepth(0, 0, 0))
         case _ =>
-          ir.children.iterator
+          ir.children
             .zipWithIndex
             .foreach {
               case (child: IR, i) => if (UsesAggEnv(ir, i))

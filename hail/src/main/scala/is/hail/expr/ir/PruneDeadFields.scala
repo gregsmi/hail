@@ -1134,6 +1134,17 @@ object PruneDeadFields {
           uses(curVals, bodyEnv.eval).map(TIterable.elementType) :+ selectKey(eltType, key)
         )
         unifyEnvsSeq(as.map(memoizeValueIR(ctx, _, TStream(childRequestedEltType), memo)))
+      case StreamZipJoinProducers(contexts, ctxName, makeProducer, key, curKey, curVals, joinF) =>
+        val baseEltType = tcoerce[TStruct](TIterable.elementType(makeProducer.typ))
+        val requestedEltType = tcoerce[TStream](requestedType).elementType
+        val bodyEnv = memoizeValueIR(ctx, joinF, requestedEltType, memo)
+        val producerRequestedEltType = unifySeq(
+          baseEltType,
+          uses(curVals, bodyEnv.eval).map(TIterable.elementType) :+ selectKey(baseEltType, key)
+        )
+        val producerEnv = memoizeValueIR(ctx, makeProducer, TStream(producerRequestedEltType), memo)
+        val ctxEnv = memoizeValueIR(ctx, contexts, TArray(unifySeq(TIterable.elementType(contexts.typ), uses(ctxName, producerEnv.eval))), memo)
+        unifyEnvsSeq(Array(bodyEnv, producerEnv, ctxEnv))
       case StreamMultiMerge(as, key) =>
         val eltType = tcoerce[TStruct](tcoerce[TStream](as.head.typ).elementType)
         val requestedEltType = tcoerce[TStream](requestedType).elementType
@@ -1530,7 +1541,7 @@ object PruneDeadFields {
           case ir: IR =>
             Some(memoizeValueIR(ctx, ir, ir.typ, memo))
         }
-        unifyEnvsSeq(envs)
+        unifyEnvsSeq(envs.toFastSeq)
     }
   }
 
@@ -1656,12 +1667,12 @@ object PruneDeadFields {
         val bmir2 = rebuild(ctx, bmir, memo)
         val aux2 = rebuildIR(ctx, aux, BindingEnv.empty, memo)
         BlockMatrixToTableApply(bmir2, aux2, function)
-      case _ => tir.copy(tir.children.map {
+      case _ => tir.mapChildren {
         // IR should be a match error - all nodes with child value IRs should have a rule
         case childT: TableIR => rebuild(ctx, childT, memo)
         case childM: MatrixIR => rebuild(ctx, childM, memo)
         case childBm: BlockMatrixIR => rebuild(ctx, childBm, memo)
-      })
+      }.asInstanceOf[TableIR]
     }
   }
 
@@ -1793,11 +1804,11 @@ object PruneDeadFields {
         RelationalLetMatrixTable(name, value2, rebuild(ctx, body, memo))
       case CastTableToMatrix(child, entriesFieldName, colsFieldName, _) =>
         CastTableToMatrix(rebuild(ctx, child, memo), entriesFieldName, colsFieldName, requestedType.colKey)
-      case _ => mir.copy(mir.children.map {
+      case _ => mir.mapChildren {
         // IR should be a match error - all nodes with child value IRs should have a rule
         case childT: TableIR => rebuild(ctx, childT, memo)
         case childM: MatrixIR => rebuild(ctx, childM, memo)
-      })
+      }.asInstanceOf[MatrixIR]
     }
   }
 
@@ -1811,14 +1822,12 @@ object PruneDeadFields {
       memo.relationalRefs += name -> value2.typ
       RelationalLetBlockMatrix(name, value2, rebuild(ctx, body, memo))
     case _ =>
-      bmir.copy(
-        bmir.children.map {
-          case tir: TableIR => rebuild(ctx, tir, memo)
-          case mir: MatrixIR => rebuild(ctx, mir, memo)
-          case ir: IR => rebuildIR(ctx, ir, BindingEnv.empty[Type], memo)
-          case bmir: BlockMatrixIR => rebuild(ctx, bmir, memo)
-        }
-      )
+      bmir.mapChildren {
+        case tir: TableIR => rebuild(ctx, tir, memo)
+        case mir: MatrixIR => rebuild(ctx, mir, memo)
+        case ir: IR => rebuildIR(ctx, ir, BindingEnv.empty[Type], memo)
+        case bmir: BlockMatrixIR => rebuild(ctx, bmir, memo)
+      }.asInstanceOf[BlockMatrixIR]
   }
 
   def rebuildIR(
@@ -1928,6 +1937,16 @@ object PruneDeadFields {
           env.bindEval(curKey -> selectKey(newEltType, key), curVals -> TArray(newEltType)),
           memo)
         StreamZipJoin(newAs, key, curKey, curVals, newJoinF)
+      case StreamZipJoinProducers(contexts, ctxName, makeProducer, key, curKey, curVals, joinF) =>
+        val newContexts = rebuildIR(ctx, contexts, env, memo)
+        val newCtxType = TIterable.elementType(newContexts.typ)
+        val newMakeProducer = rebuildIR(ctx, makeProducer, env.bindEval(ctxName, newCtxType), memo)
+        val newEltType = TIterable.elementType(newMakeProducer.typ).asInstanceOf[TStruct]
+        val newJoinF = rebuildIR(ctx,
+          joinF,
+          env.bindEval(curKey -> selectKey(newEltType, key), curVals -> TArray(newEltType)),
+          memo)
+        StreamZipJoinProducers(newContexts, ctxName, newMakeProducer,key, curKey, curVals, newJoinF)
       case StreamMultiMerge(as, key) =>
         val eltType = tcoerce[TStruct](tcoerce[TStream](as.head.typ).elementType)
         val requestedEltType = tcoerce[TStream](requestedType).elementType
@@ -2161,12 +2180,12 @@ object PruneDeadFields {
         val dynamicID2 = rebuildIR(ctx, dynamicID, env, memo)
         CollectDistributedArray(contexts2, globals2, cname, gname, body2, dynamicID2, staticID, tsd)
       case _ =>
-        ir.copy(ir.children.map {
+        ir.mapChildren {
           case valueIR: IR => rebuildIR(ctx, valueIR, env, memo) // FIXME: assert IR does not bind or change env
           case mir: MatrixIR => rebuild(ctx, mir, memo)
           case tir: TableIR => rebuild(ctx, tir, memo)
           case bmir: BlockMatrixIR => bmir //NOTE Currently no BlockMatrixIRs would have dead fields
-        })
+        }
     }
   }
 

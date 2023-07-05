@@ -1,8 +1,6 @@
-import json
 import os
 import re
 from collections import defaultdict
-from typing import List
 
 import avro.schema
 from avro.datafile import DataFileReader
@@ -12,8 +10,7 @@ import hail as hl
 from hail import ir
 from hail.expr import StructExpression, LocusExpression, \
     expr_array, expr_float64, expr_str, expr_numeric, expr_call, expr_bool, \
-    expr_any, \
-    to_expr, analyze
+    expr_int32, to_expr, analyze
 from hail.expr.types import hail_type, tarray, tfloat64, tstr, tint32, tstruct, \
     tcall, tbool, tint64, tfloat32
 from hail.genetics.reference_genome import reference_genome_type
@@ -1540,7 +1537,7 @@ def import_table(paths,
 
     .. code-block:: text
 
-        $ cat data/samples2.tsv
+        $ cat data/samples2.csv
         Batch,PT-ID
         1kg,PT-0001
         1kg,PT-0002
@@ -1557,7 +1554,7 @@ def import_table(paths,
 
     - Pass the non-default missing value ``.``
 
-    >>> table = hl.import_table('data/samples2.tsv', delimiter=',', missing='.')
+    >>> table = hl.import_table('data/samples2.csv', delimiter=',', missing='.')
 
     Let's import a table from a file with no header and sample IDs that need to
     be transformed.  Suppose the sample IDs are of the form ``NA#####``. This
@@ -2646,7 +2643,9 @@ def get_vcf_metadata(path):
            filter=nullable(str),
            find_replace=nullable(sized_tupleof(str, str)),
            n_partitions=nullable(int),
-           block_size=nullable(int))
+           block_size=nullable(int),
+           _create_row_uids=bool,
+           _create_col_uids=bool)
 def import_vcf(path,
                force=False,
                force_bgz=False,
@@ -2662,7 +2661,9 @@ def import_vcf(path,
                filter=None,
                find_replace=None,
                n_partitions=None,
-               block_size=None) -> MatrixTable:
+               block_size=None,
+               _create_row_uids=False, _create_col_uids=False,
+               ) -> MatrixTable:
     """Import VCF file(s) as a :class:`.MatrixTable`.
 
     Examples
@@ -2818,111 +2819,36 @@ def import_vcf(path,
                                 n_partitions, block_size, min_partitions,
                                 reference_genome, contig_recoding, array_elements_required,
                                 skip_invalid_loci, force_bgz, force, filter, find_replace)
-    return MatrixTable(ir.MatrixRead(reader, drop_cols=drop_samples))
+    return MatrixTable(ir.MatrixRead(reader, drop_cols=drop_samples, drop_row_uids=not _create_row_uids, drop_col_uids=not _create_col_uids))
 
 
-@typecheck(path=sequenceof(str),
-           partitions=expr_any,
-           call_fields=oneof(str, sequenceof(str)),
-           entry_float_type=enumeration(tfloat32, tfloat64),
-           reference_genome=nullable(reference_genome_type),
-           contig_recoding=nullable(dictof(str, str)),
+@typecheck(path=expr_str,
+           file_num=expr_int32,
+           contig=expr_str,
+           start=expr_int32,
+           end=expr_int32,
+           header_info=anytype,
+           call_fields=sequenceof(str),
+           entry_float_type=hail_type,
            array_elements_required=bool,
+           reference_genome=reference_genome_type,
+           contig_recoding=nullable(dictof(str, str)),
            skip_invalid_loci=bool,
            filter=nullable(str),
-           find_replace=nullable(sized_tupleof(str, str)),
-           _external_sample_ids=nullable(sequenceof(sequenceof(str))),
-           _external_header=nullable(str))
-def import_gvcfs(path,
-                 partitions,
-                 call_fields=['PGT'],
-                 entry_float_type=tfloat64,
-                 reference_genome='default',
-                 contig_recoding=None,
-                 array_elements_required=True,
-                 skip_invalid_loci=False,
-                 filter=None,
-                 find_replace=None,
-                 _external_sample_ids=None,
-                 _external_header=None) -> List[MatrixTable]:
-    """(Experimental) Import multiple vcfs as multiple :class:`.MatrixTable`.
-
-    .. include:: ../_templates/experimental.rst
-
-    All files described by the ``path`` argument must be block gzipped VCF
-    files. They must all be tabix indexed. Because of this requirement, no
-    ``force`` or ``force_bgz`` arguments are present. Otherwise, the arguments
-    to this function are almost identical to :func:`.import_vcf`.  However, this
-    function also requrires a ``partitions`` argument, which is used to divide
-    and filter the vcfs.  It must be an expression or literal of type
-    ``array<interval<struct{locus:locus<RG>}>>``. A partition will be created
-    for every element of the array. Loci that fall outside of any interval will
-    not be imported. For example:
-
-    .. code-block:: python
-
-        [hl.Interval(hl.Locus("chr22", 1), hl.Locus("chr22", 5332423), includes_end=True)]
-
-    The ``includes_start`` and ``includes_end`` keys must be ``True``. The
-    ``contig`` fields must be the same.
-
-    One difference between :func:`.import_gvcfs` and :func:`.import_vcf` is that
-    :func:`.import_gvcfs` only keys the resulting matrix tables by ``locus``
-    rather than ``locus, alleles``.
-    """
-    hl.utils.no_service_backend('import_gvcfs')
-    rg = reference_genome.name if reference_genome else None
-
-    partitions, partitions_type = hl.utils._dumps_partitions(partitions, hl.tstruct(locus=hl.tlocus(rg),
-                                                                                    alleles=hl.tarray(hl.tstr)))
-
-    vector_ref_s = Env.spark_backend('import_vcfs')._jbackend.pyImportVCFs(
-        wrap_to_list(path),
-        wrap_to_list(call_fields),
-        entry_float_type._parsable_string(),
-        rg,
-        contig_recoding,
-        array_elements_required,
-        skip_invalid_loci,
-        partitions, partitions_type._parsable_string(),
-        filter,
-        find_replace[0] if find_replace is not None else None,
-        find_replace[1] if find_replace is not None else None,
-        _external_sample_ids,
-        _external_header)
-    vector_ref = json.loads(vector_ref_s)
-    jir_vref = ir.JIRVectorReference(vector_ref['vector_ir_id'],
-                                     vector_ref['length'],
-                                     hl.tmatrix._from_json(vector_ref['type']))
-
-    return [MatrixTable(ir.JavaMatrixVectorRef(jir_vref, idx)) for idx in range(len(jir_vref))]
-
-
-def import_vcfs(path,
-                partitions,
-                call_fields=['PGT'],
-                entry_float_type=tfloat64,
-                reference_genome='default',
-                contig_recoding=None,
-                array_elements_required=True,
-                skip_invalid_loci=False,
-                filter=None,
-                find_replace=None,
-                _external_sample_ids=None,
-                _external_header=None) -> List[MatrixTable]:
-    """This function is deprecated, use :func:`.import_gvcfs` instead"""
-    return import_gvcfs(path,
-                        partitions,
-                        call_fields,
-                        entry_float_type,
-                        reference_genome,
-                        contig_recoding,
-                        array_elements_required,
-                        skip_invalid_loci,
-                        filter,
-                        find_replace,
-                        _external_sample_ids,
-                        _external_header)
+           find=nullable(str),
+           replace=nullable(str))
+def import_gvcf_interval(path, file_num, contig, start, end, header_info, call_fields=[], entry_float_type='float64',
+                         array_elements_required=True, reference_genome='default', contig_recoding=None,
+                         skip_invalid_loci=False, filter=None, find=None, replace=None):
+    indices, aggs = hl.expr.unify_all(path, file_num, contig, start, end)
+    stream_ir = ir.ReadPartition(hl.struct(fileNum=file_num, path=path, contig=contig, start=start, end=end)._ir,
+                                 ir.GVCFPartitionReader(header_info, call_fields, entry_float_type,
+                                                        array_elements_required,
+                                                        reference_genome, contig_recoding or {},
+                                                        skip_invalid_loci, filter, find, replace,
+                                                        None))
+    arr = ir.ToArray(stream_ir)
+    return hl.expr.construct_expr(arr, arr.typ, indices, aggs)
 
 
 @typecheck(path=oneof(str, sequenceof(str)),
@@ -3025,6 +2951,18 @@ def index_bgen(path,
         info(f"indexed {n} sites in {path} at {idx_path}")
 
 
+@typecheck(path=expr_str, filter=nullable(expr_str), find=nullable(expr_str), replace=nullable(expr_str))
+def get_vcf_header_info(path, filter=None, find=None, replace=None):
+    from hail.ir.register_functions import vcf_header_type_str
+    return hl.expr.functions._func(
+        "getVCFHeader",
+        hl.dtype(vcf_header_type_str),
+        path,
+        hl.missing('str') if filter is None else filter,
+        hl.missing('str') if find is None else find,
+        hl.missing('str') if replace is None else replace)
+
+
 @typecheck(path=str,
            _intervals=nullable(sequenceof(anytype)),
            _filter_intervals=bool,
@@ -3124,3 +3062,184 @@ def import_avro(paths, *, key=None, intervals=None):
             DataFileReader.determine_file_length = original_determine_file_length
 
     return Table(ir.TableRead(tr))
+
+
+@typecheck(paths=oneof(str, sequenceof(str)),
+           key=table_key_type,
+           min_partitions=nullable(int),
+           impute=bool,
+           no_header=bool,
+           comment=oneof(str, sequenceof(str)),
+           missing=oneof(str, sequenceof(str)),
+           types=dictof(str, hail_type),
+           skip_blank_lines=bool,
+           force_bgz=bool,
+           filter=nullable(str),
+           find_replace=nullable(sized_tupleof(str, str)),
+           force=bool,
+           source_file_field=nullable(str))
+def import_csv(paths,
+               *,
+               key=None,
+               min_partitions=None,
+               impute=False,
+               no_header=False,
+               comment=(),
+               missing="NA",
+               types={},
+               quote='"',
+               skip_blank_lines=False,
+               force_bgz=False,
+               filter=None,
+               find_replace=None,
+               force=False,
+               source_file_field=None) -> Table:
+    """Import a csv file as a :class:`.Table`.
+
+    Examples
+    --------
+
+    Let's import fields from a CSV file with missing data:
+
+    .. code-block:: text
+
+        $ cat data/samples2.csv
+        Batch,PT-ID
+        1kg,PT-0001
+        1kg,PT-0002
+        study1,PT-0003
+        study3,PT-0003
+        .,PT-0004
+        1kg,PT-0005
+        .,PT-0006
+        1kg,PT-0007
+
+    In this case, we should:
+
+    - Pass the non-default missing value ``.``
+
+    >>> table = hl.import_csv('data/samples2.csv', missing='.')
+    >>> table.show()
+    +----------+-----------+
+    | Batch    | PT-ID     |
+    +----------+-----------+
+    | str      | str       |
+    +----------+-----------+
+    | "1kg"    | "PT-0001" |
+    | "1kg"    | "PT-0002" |
+    | "study1" | "PT-0003" |
+    | "study3" | "PT-0003" |
+    | NA       | "PT-0004" |
+    | "1kg"    | "PT-0005" |
+    | NA       | "PT-0006" |
+    | "1kg"    | "PT-0007" |
+    +----------+-----------+
+    <BLANKLINE>
+
+    Notes
+    -----
+
+    The `impute` parameter tells Hail to scan the file an extra time to gather
+    information about possible field types. While this is a bit slower for large
+    files because the file is parsed twice, the convenience is often worth this
+    cost.
+
+    If set, the `comment` parameter causes Hail to skip any line that starts
+    with the given string(s). For example, passing ``comment='#'`` will skip any
+    line beginning in a pound sign. If the string given is a single character,
+    Hail will skip any line beginning with the character. Otherwise if the
+    length of the string is greater than 1, Hail will interpret the string as a
+    regex and will filter out lines matching the regex. For example, passing
+    ``comment=['#', '^track.*']`` will filter out lines beginning in a pound sign
+    and any lines that match the regex ``'^track.*'``.
+
+    The `missing` parameter defines the representation of missing data in the table.
+
+    .. note::
+
+        The `missing` parameter is **NOT** a regex. The `comment` parameter is
+        treated as a regex **ONLY** if the length of the string is greater than
+        1 (not a single character).
+
+    The `no_header` parameter indicates that the file has no header line. If
+    this option is passed, then the field names will be `f0`, `f1`,
+    ... `fN` (0-indexed).
+
+    The `types` parameter allows the user to pass the types of fields in the
+    table. It is an :obj:`dict` keyed by :class:`str`, with :class:`.HailType` values.
+    See the examples above for a standard usage. Additionally, this option can
+    be used to override type imputation. For example, if the field
+    ``Chromosome`` only contains the values ``1`` through ``22``, it will be
+    imputed to have type :py:data:`.tint32`, whereas most Hail methods expect
+    that a chromosome field will be of type :py:data:`.tstr`. Setting
+    ``impute=True`` and ``types={'Chromosome': hl.tstr}`` solves this problem.
+
+    Parameters
+    ----------
+
+    paths : :class:`str` or :obj:`list` of :obj:`str`
+        Files to import.
+    key : :class:`str` or :obj:`list` of :obj:`str`
+        Key fields(s).
+    min_partitions : :obj:`int` or :obj:`None`
+        Minimum number of partitions.
+    no_header : :obj:`bool`
+        If ``True```, assume the file has no header and name the N fields `f0`,
+        `f1`, ... `fN` (0-indexed).
+    impute : :obj:`bool`
+        If ``True``, Impute field types from the file.
+    comment : :class:`str` or :obj:`list` of :obj:`str`
+        Skip lines beginning with the given string if the string is a single
+        character. Otherwise, skip lines that match the regex specified. Multiple
+        comment characters or patterns should be passed as a list.
+    missing : :class:`str` or :obj:`list` [:obj:`str`]
+        Identifier(s) to be treated as missing.
+    types : :obj:`dict` mapping :class:`str` to :class:`.HailType`
+        Dictionary defining field types.
+    quote : :class:`str` or :obj:`None`
+        Quote character.
+    skip_blank_lines : :obj:`bool`
+        If ``True``, ignore empty lines. Otherwise, throw an error if an empty
+        line is found.
+    force_bgz : :obj:`bool`
+        If ``True``, load files as blocked gzip files, assuming
+        that they were actually compressed using the BGZ codec. This option is
+        useful when the file extension is not ``'.bgz'``, but the file is
+        blocked gzip, so that the file can be read in parallel and not on a
+        single node.
+    filter : :class:`str`, optional
+        Line filter regex. A partial match results in the line being removed
+        from the file. Applies before `find_replace`, if both are defined.
+    find_replace : (:class:`str`, :obj:`str`)
+        Line substitution regex. Functions like ``re.sub``, but obeys the exact
+        semantics of Java's
+        `String.replaceAll <https://docs.oracle.com/javase/8/docs/api/java/lang/String.html#replaceAll-java.lang.String-java.lang.String->`__.
+    force : :obj:`bool`
+        If ``True``, load gzipped files serially on one core. This should
+        be used only when absolutely necessary, as processing time will be
+        increased due to lack of parallelism.
+    source_file_field : :class:`str`, optional
+        If defined, the source file name for each line will be a field of the table
+        with this name. Can be useful when importing multiple tables using glob patterns.
+    Returns
+    -------
+    :class:`.Table`
+    """
+
+    ht = hl.import_table(paths,
+                         key=key,
+                         min_partitions=min_partitions,
+                         impute=impute,
+                         no_header=no_header,
+                         comment=comment,
+                         missing=missing,
+                         types=types,
+                         skip_blank_lines=skip_blank_lines,
+                         force_bgz=force_bgz,
+                         filter=filter,
+                         find_replace=find_replace,
+                         force=force,
+                         source_file_field=source_file_field,
+                         delimiter=",",
+                         quote=quote)
+    return ht

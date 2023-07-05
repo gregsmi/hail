@@ -136,6 +136,8 @@ object InferType {
         TStream(body.typ)
       case StreamZipJoin(_, _, _, _, joinF) =>
         TStream(joinF.typ)
+      case StreamZipJoinProducers(_, _, _, _, _, _, joinF) =>
+        TStream(joinF.typ)
       case StreamMultiMerge(as, _) =>
         TStream(tcoerce[TStream](as.head.typ).elementType)
       case StreamFilter(a, name, cond) =>
@@ -221,6 +223,12 @@ object InferType {
           TTuple(TNDArray(TFloat64, Nat(2)), TNDArray(TFloat64, Nat(1)), TNDArray(TFloat64, Nat(2)))
         } else {
           TNDArray(TFloat64, Nat(1))
+        }
+      case NDArrayEigh(nd, eigvalsOnly, _) =>
+        if (eigvalsOnly) {
+          TNDArray(TFloat64, Nat(1))
+        } else {
+          TTuple(TNDArray(TFloat64, Nat(1)), TNDArray(TFloat64, Nat(2)))
         }
       case NDArrayInv(_, _) =>
         TNDArray(TFloat64, Nat(2))

@@ -48,7 +48,7 @@ from hailtop import aiotools, httpx
 from hailtop.aiotools import AsyncFS, LocalAsyncFS
 from hailtop.aiotools.router_fs import RouterAsyncFS
 from hailtop.batch.hail_genetics_images import HAIL_GENETICS_IMAGES
-from hailtop.config import DeployConfig
+from hailtop.config import get_deploy_config
 from hailtop.hail_logging import AccessLogger, configure_logging
 from hailtop.utils import (
     CalledProcessError,
@@ -114,11 +114,13 @@ warnings.warn = deeper_stack_level_warn
 class BatchWorkerAccessLogger(AccessLogger):
     def __init__(self, logger: logging.Logger, log_format: str):
         super().__init__(logger, log_format)
-
-        self.exclude = [
-            ('GET', re.compile('/healthcheck')),
-            ('POST', re.compile('/api/v1alpha/batches/jobs/create')),
-        ]
+        if NAMESPACE == 'default':
+            self.exclude = [
+                ('GET', re.compile('/healthcheck')),
+                ('POST', re.compile('/api/v1alpha/batches/jobs/create')),
+            ]
+        else:
+            self.exclude = []
 
     def log(self, request, response, time):
         for method, path_expr in self.exclude:
@@ -199,7 +201,7 @@ instance_config: Optional[InstanceConfig] = None
 
 N_SLOTS = 4 * CORES  # Jobs are allowed at minimum a quarter core
 
-deploy_config = DeployConfig('gce', NAMESPACE, {})
+deploy_config = get_deploy_config()
 
 docker: Optional[aiodocker.Docker] = None
 
@@ -579,7 +581,13 @@ class Image:
 
         await pull()
 
-        image_config, _ = await check_exec_output('docker', 'inspect', self.image_ref_str)
+        try:
+            image_config, _ = await check_exec_output('docker', 'inspect', self.image_ref_str)
+        except:
+            # inspect non-deterministically fails sometimes
+            await asyncio.sleep(1)
+            await pull()
+            image_config, _ = await check_exec_output('docker', 'inspect', self.image_ref_str)
         image_configs[self.image_ref_str] = json.loads(image_config)[0]
 
     async def _ensure_image_is_pulled(
@@ -767,6 +775,7 @@ class Container:
         volume_mounts: Optional[List[MountSpecification]] = None,
         env: Optional[List[str]] = None,
         stdin: Optional[str] = None,
+        log_path: Optional[str] = None,
     ):
         self.task_manager = task_manager
         self.fs = fs
@@ -803,7 +812,7 @@ class Container:
         self.container_scratch = scratch_dir
         self.container_overlay_path = f'{self.container_scratch}/rootfs_overlay'
         self.config_path = f'{self.container_scratch}/config'
-        self.log_path = f'{self.container_scratch}/container.log'
+        self.log_path = log_path or f'{self.container_scratch}/container.log'
         self.resource_usage_path = f'{self.container_scratch}/resource_usage'
 
         self.overlay_mounted = False
@@ -1239,7 +1248,7 @@ class Container:
                     }
                 )
 
-        return (
+        mounts = (
             self.volume_mounts
             + external_volumes
             + [
@@ -1301,6 +1310,18 @@ class Container:
                 },
             ]
         )
+
+        if not any(v['destination'] == '/deploy-config' for v in self.volume_mounts):
+            mounts.append(
+                {
+                    'source': '/deploy-config/deploy-config.json',
+                    'destination': '/deploy-config/deploy-config.json',
+                    'type': 'none',
+                    'options': ['bind', 'ro', 'private'],
+                },
+            )
+
+        return mounts
 
     def _env(self):
         assert self.image.image_config
@@ -2078,6 +2099,11 @@ class JVMJob(Job):
         os.makedirs(f'{self.scratch}/batch-config')
         with open(f'{self.scratch}/batch-config/batch-config.json', 'wb') as config:
             config.write(orjson.dumps({'version': 1, 'batch_id': self.batch_id}))
+        # Necessary for backward compatibility for Hail Query jars that expect
+        # the deploy config at this path and not at `/deploy-config/deploy-config.json`
+        os.makedirs(f'{self.scratch}/secrets/deploy-config', exist_ok=True)
+        with open(f'{self.scratch}/secrets/deploy-config/deploy-config.json', 'wb') as config:
+            config.write(orjson.dumps(deploy_config.get_config()))
 
     def step(self, name):
         return self.timings.step(name)
@@ -2493,6 +2519,7 @@ class JVMContainer:
             memory_in_bytes=total_memory_bytes,
             env=[f'HAIL_WORKER_OFF_HEAP_MEMORY_PER_CORE_MB={off_heap_memory_per_core_mib}', f'HAIL_CLOUD={CLOUD}'],
             volume_mounts=volume_mounts,
+            log_path=f'/batch/jvm-container-logs/jvm-{index}.log',
         )
 
         await c.create()
@@ -2867,7 +2894,6 @@ class Worker:
             ],
         )
         self.file_store = FileStore(fs, BATCH_LOGS_STORAGE_URI, INSTANCE_ID)
-        self.compute_client = CLOUD_WORKER_API.get_compute_client()
 
         self.instance_token = os.environ['ACTIVATION_TOKEN']
 
@@ -2928,17 +2954,12 @@ class Worker:
                         log.info('closed file store')
                 finally:
                     try:
-                        if self.compute_client:
-                            await self.compute_client.close()
-                            log.info('closed compute client')
+                        if self.fs:
+                            await self.fs.close()
+                            log.info('closed worker file system')
                     finally:
-                        try:
-                            if self.fs:
-                                await self.fs.close()
-                                log.info('closed worker file system')
-                        finally:
-                            await self.client_session.close()
-                            log.info('closed client session')
+                        await self.client_session.close()
+                        log.info('closed client session')
 
     async def run_job(self, job):
         try:
@@ -2985,6 +3006,13 @@ class Worker:
 
         assert job_spec['job_id'] == job_id
         id = (batch_id, job_id)
+
+        request['batch_telemetry'] = {
+            'operation': 'create_job',
+            'batch_id': str(batch_id),
+            'job_id': str(job_id),
+            'job_queue_time': str(body['queue_time']),
+        }
 
         # already running
         if id in self.jobs:
@@ -3060,6 +3088,12 @@ class Worker:
         batch_id = int(request.match_info['batch_id'])
         job_id = int(request.match_info['job_id'])
         id = (batch_id, job_id)
+
+        request['batch_telemetry'] = {
+            'operation': 'delete_job',
+            'batch_id': str(batch_id),
+            'job_id': str(job_id),
+        }
 
         if id not in self.jobs:
             raise web.HTTPNotFound()
@@ -3363,22 +3397,27 @@ async def async_main():
             log.info('worker shutdown', exc_info=True)
         finally:
             try:
-                await network_allocator_task_manager.shutdown_and_wait()
+                await CLOUD_WORKER_API.close()
             finally:
                 try:
-                    await docker.close()
-                    log.info('docker closed')
+                    await network_allocator_task_manager.shutdown_and_wait()
                 finally:
-                    asyncio.get_event_loop().set_debug(True)
-                    other_tasks = [t for t in asyncio.all_tasks() if t != asyncio.current_task()]
-                    if other_tasks:
-                        log.warning('Tasks immediately after docker close')
-                        dump_all_stacktraces()
-                        _, pending = await asyncio.wait(other_tasks, timeout=10 * 60, return_when=asyncio.ALL_COMPLETED)
-                        for t in pending:
-                            log.warning('Dangling task:')
-                            t.print_stack()
-                            t.cancel()
+                    try:
+                        await docker.close()
+                        log.info('docker closed')
+                    finally:
+                        asyncio.get_event_loop().set_debug(True)
+                        other_tasks = [t for t in asyncio.all_tasks() if t != asyncio.current_task()]
+                        if other_tasks:
+                            log.warning('Tasks immediately after docker close')
+                            dump_all_stacktraces()
+                            _, pending = await asyncio.wait(
+                                other_tasks, timeout=10 * 60, return_when=asyncio.ALL_COMPLETED
+                            )
+                            for t in pending:
+                                log.warning('Dangling task:')
+                                t.print_stack()
+                                t.cancel()
 
 
 loop = asyncio.get_event_loop()

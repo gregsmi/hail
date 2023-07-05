@@ -147,7 +147,6 @@ def test_invalid_resource_requests(client: BatchClient):
         bb.submit()
 
 
-@pytest.mark.timeout(6 * 60)
 def test_out_of_memory(client: BatchClient):
     bb = create_batch(client)
     resources = {'cpu': '0.25'}
@@ -157,7 +156,6 @@ def test_out_of_memory(client: BatchClient):
     assert j._get_out_of_memory(status, 'main'), str((status, b.debug_info()))
 
 
-@pytest.mark.timeout(6 * 60)
 def test_out_of_storage(client: BatchClient):
     bb = create_batch(client)
     resources = {'cpu': '0.25'}
@@ -169,7 +167,6 @@ def test_out_of_storage(client: BatchClient):
     assert "fallocate failed: No space left on device" in job_log['main']
 
 
-@pytest.mark.timeout(6 * 60)
 def test_quota_applies_to_volume(client: BatchClient):
     bb = create_batch(client)
     resources = {'cpu': '0.25'}
@@ -183,7 +180,6 @@ def test_quota_applies_to_volume(client: BatchClient):
     assert "fallocate failed: No space left on device" in job_log['main']
 
 
-@pytest.mark.timeout(6 * 60)
 def test_relative_volume_path_is_actually_absolute(client: BatchClient):
     # https://github.com/hail-is/hail/pull/12990#issuecomment-1540332989
     bb = create_batch(client)
@@ -198,7 +194,6 @@ def test_relative_volume_path_is_actually_absolute(client: BatchClient):
     assert status['state'] == 'Success', str((status, b.debug_info()))
 
 
-@pytest.mark.timeout(6 * 60)
 def test_quota_shared_by_io_and_rootfs(client: BatchClient):
     bb = create_batch(client)
     resources = {'cpu': '0.25', 'storage': '10Gi'}
@@ -228,7 +223,6 @@ def test_quota_shared_by_io_and_rootfs(client: BatchClient):
     assert "fallocate failed: No space left on device" in job_log['main'], str((job_log, b.debug_info()))
 
 
-@pytest.mark.timeout(6 * 60)
 def test_nonzero_storage(client: BatchClient):
     bb = create_batch(client)
     resources = {'cpu': '0.25', 'storage': '20Gi'}
@@ -323,7 +317,7 @@ def test_list_batches(client: BatchClient):
     assert_batch_ids({b2.id}, f'tag={tag} name=b2')
 
 
-def test_list_jobs(client: BatchClient):
+def test_list_jobs_v1(client: BatchClient):
     bb = create_batch(client)
     j_success = bb.create_job(DOCKER_ROOT_IMAGE, ['true'])
     j_failure = bb.create_job(DOCKER_ROOT_IMAGE, ['false'])
@@ -331,23 +325,114 @@ def test_list_jobs(client: BatchClient):
     j_running = bb.create_job(DOCKER_ROOT_IMAGE, ['sleep', '1800'], attributes={'tag': 'foo'})
 
     b = bb.submit()
-    j_success.wait()
-    j_failure.wait()
-    j_error.wait()
 
     def assert_job_ids(expected, q=None):
         jobs = b.jobs(q=q)
         actual = set(j['job_id'] for j in jobs)
         assert actual == expected, str((jobs, b.debug_info()))
 
-    assert_job_ids({j_success.job_id}, 'success')
-    assert_job_ids({j_success.job_id, j_failure.job_id, j_error.job_id}, 'done')
-    assert_job_ids({j_running.job_id}, '!done')
-    assert_job_ids({j_running.job_id}, 'tag=foo')
-    assert_job_ids({j_error.job_id, j_running.job_id}, 'has:tag')
-    assert_job_ids({j_success.job_id, j_failure.job_id, j_error.job_id, j_running.job_id}, None)
+    try:
+        j_success.wait()
+        j_failure.wait()
+        j_error.wait()
 
-    b.cancel()
+        assert_job_ids({j_success.job_id}, 'success')
+        assert_job_ids({j_success.job_id, j_failure.job_id, j_error.job_id}, 'done')
+        assert_job_ids({j_running.job_id}, '!done')
+        assert_job_ids({j_running.job_id}, 'tag=foo')
+        assert_job_ids({j_error.job_id, j_running.job_id}, 'has:tag')
+        assert_job_ids({j_success.job_id, j_failure.job_id, j_error.job_id, j_running.job_id}, None)
+    finally:
+        b.cancel()
+
+
+def test_list_jobs_v2(client: BatchClient):
+    bb = create_batch(client)
+    j_success = bb.create_job(DOCKER_ROOT_IMAGE, ['true'])
+    j_failure = bb.create_job(DOCKER_ROOT_IMAGE, ['false'])
+    j_error = bb.create_job(DOCKER_ROOT_IMAGE, ['sleep 5'], attributes={'tag': 'bar'})
+    j_running = bb.create_job(DOCKER_ROOT_IMAGE, ['sleep', '1800'], attributes={'tag': 'foo'})
+
+    b = bb.submit()
+
+    def assert_job_ids(expected, q=None):
+        jobs = b.jobs(q=q, version=2)
+        actual = set(j['job_id'] for j in jobs)
+        assert actual == expected, str((jobs, b.debug_info()))
+
+    try:
+        j_success.wait()
+        j_failure.wait()
+        j_error.wait()
+
+        assert_job_ids({j_success.job_id}, 'state = success')
+        assert_job_ids({j_success.job_id}, 'state == success')
+        assert_job_ids({j_success.job_id}, 'state=success')
+        assert_job_ids({j_success.job_id}, 'state==success')
+
+        assert_job_ids({j_success.job_id, j_failure.job_id, j_error.job_id}, 'state=done')
+        assert_job_ids({j_running.job_id}, 'state != done')
+
+        assert_job_ids({j_running.job_id}, 'tag=foo')
+        assert_job_ids({j_running.job_id}, 'tag=~fo')
+        assert_job_ids({j_running.job_id}, 'tag = foo')
+        assert_job_ids({j_running.job_id}, 'tag =~ fo')
+
+        assert_job_ids({j_error.job_id}, 'tag!=foo')
+        assert_job_ids({j_error.job_id}, 'tag != foo')
+        assert_job_ids({j_error.job_id, j_running.job_id}, '"tag"')
+        assert_job_ids({j_running.job_id}, 'foo')
+
+        no_jobs: Set[int] = set()
+        all_jobs = {j_error.job_id, j_running.job_id, j_failure.job_id, j_success.job_id}
+        assert_job_ids(no_jobs, 'duration > 50000')
+        assert_job_ids(all_jobs, 'instance_collection = standard')
+        assert_job_ids(no_jobs, 'cost > 1000')
+
+        assert_job_ids(no_jobs, 'start_time == 2023-02-24T17:15:25Z')
+        assert_job_ids(no_jobs, 'end_time == 2023-02-24T17:15:25Z')
+
+        assert_job_ids(no_jobs, 'start_time<2023-02-24T17:15:25Z')
+        assert_job_ids(no_jobs, 'start_time<=2023-02-24T17:15:25Z')
+        assert_job_ids(all_jobs, 'start_time != 2023-02-24T17:15:25Z')
+        assert_job_ids(all_jobs, 'start_time>2023-02-24T17:15:25Z')
+        assert_job_ids(all_jobs, 'start_time>=2023-02-24T17:15:25Z')
+
+        assert_job_ids(no_jobs, 'start_time < 2023-02-24T17:15:25Z')
+        assert_job_ids(no_jobs, 'start_time <= 2023-02-24T17:15:25Z')
+        assert_job_ids(all_jobs, 'start_time > 2023-02-24T17:15:25Z')
+        assert_job_ids(all_jobs, 'start_time >= 2023-02-24T17:15:25Z')
+
+        assert_job_ids(no_jobs, 'instance = batch-worker')
+        assert_job_ids(all_jobs, 'instance != batch-worker')
+        assert_job_ids(all_jobs, 'instance =~ batch-worker')
+        assert_job_ids(no_jobs, 'instance !~ batch-worker')
+
+        assert_job_ids(no_jobs, 'instance=batch-worker')
+        assert_job_ids(all_jobs, 'instance!=batch-worker')
+        assert_job_ids(all_jobs, 'instance=~batch-worker')
+        assert_job_ids(no_jobs, 'instance!~batch-worker')
+
+        assert_job_ids({j_success.job_id}, 'job_id = 1')
+        assert_job_ids(all_jobs, 'job_id >= 1')
+
+        assert_job_ids(all_jobs, None)
+
+        assert_job_ids(
+            no_jobs,
+            '''
+job_id >=1
+instance == foo
+foo = bar
+start_time >= 2023-02-24T17:15:25Z
+end_time <= 2023-02-24T17:18:25Z
+''',
+        )
+
+        with pytest.raises(httpx.ClientResponseError, match='expected float, but found'):
+            assert_job_ids(no_jobs, 'duration >= abcd')
+    finally:
+        b.cancel()
 
 
 def test_include_jobs(client: BatchClient):
@@ -818,7 +903,7 @@ backend.close()
             '-c',
             f'''
 hailctl config set domain {DOMAIN}
-rm /deploy-config/deploy-config.json
+export HAIL_DEFAULT_NAMESPACE=default
 python3 -c \'{script}\'''',
         ],
         mount_tokens=True,
@@ -831,27 +916,26 @@ python3 -c \'{script}\'''',
         assert status['state'] == 'Failed', str((status, b.debug_info()))
         assert "Please log in" in j.log()['main'], (str(j.log()['main']), status)
 
+
+def test_deploy_config_is_mounted_as_readonly(client: BatchClient):
     bb = create_batch(client)
     j = bb.create_job(
         HAIL_GENETICS_HAILTOP_IMAGE,
         [
             '/bin/bash',
             '-c',
-            f'''
+            '''
+set -ex
 jq '.default_namespace = "default"' /deploy-config/deploy-config.json > tmp.json
-mv tmp.json /deploy-config/deploy-config.json
-python3 -c \'{script}\'''',
+mv tmp.json /deploy-config/deploy-config.json''',
         ],
         mount_tokens=True,
     )
     b = bb.submit()
     status = j.wait()
-    if NAMESPACE == 'default':
-        assert status['state'] == 'Success', str((status, b.debug_info()))
-    else:
-        assert status['state'] == 'Failed', str((status, b.debug_info()))
-        job_log = j.log()
-        assert "Please log in" in job_log['main'], str((job_log, b.debug_info()))
+    assert status['state'] == 'Failed', str((status, b.debug_info()))
+    job_log = j.log()
+    assert "mv: cannot move" in job_log['main'], str((job_log, b.debug_info()))
 
 
 def test_cannot_contact_other_internal_ips(client: BatchClient):
@@ -1037,7 +1121,6 @@ async def test_old_clients_that_submit_mount_docker_socket_true_is_rejected(clie
                 await bb._submit_jobs(b.id, update_id, [orjson.dumps(spec)], 1, pbar_task)
 
 
-@pytest.mark.timeout(6 * 60)
 def test_pool_highmem_instance(client: BatchClient):
     bb = create_batch(client)
     resources = {'cpu': '0.25', 'memory': 'highmem'}
@@ -1048,7 +1131,6 @@ def test_pool_highmem_instance(client: BatchClient):
     assert 'highmem' in status['status']['worker'], str((status, b.debug_info()))
 
 
-@pytest.mark.timeout(6 * 60)
 def test_pool_highmem_instance_cheapest(client: BatchClient):
     bb = create_batch(client)
     resources = {'cpu': '1', 'memory': '5Gi'}
@@ -1059,7 +1141,6 @@ def test_pool_highmem_instance_cheapest(client: BatchClient):
     assert 'highmem' in status['status']['worker'], str((status, b.debug_info()))
 
 
-@pytest.mark.timeout(6 * 60)
 def test_pool_highcpu_instance(client: BatchClient):
     bb = create_batch(client)
     resources = {'cpu': '0.25', 'memory': 'lowmem'}
@@ -1070,7 +1151,6 @@ def test_pool_highcpu_instance(client: BatchClient):
     assert 'highcpu' in status['status']['worker'], str((status, b.debug_info()))
 
 
-@pytest.mark.timeout(6 * 60)
 @pytest.mark.xfail(os.environ.get('HAIL_CLOUD') == 'azure', strict=True, reason='prices changed in Azure 2023-06-01')
 def test_pool_highcpu_instance_cheapest(client: BatchClient):
     bb = create_batch(client)
@@ -1102,7 +1182,6 @@ def test_pool_standard_instance_cheapest(client: BatchClient):
     assert 'standard' in status['status']['worker'], str((status, b.debug_info()))
 
 
-@pytest.mark.timeout(6 * 60)
 def test_job_private_instance_preemptible(client: BatchClient):
     bb = create_batch(client)
     resources = {'machine_type': smallest_machine_type()}
@@ -1113,7 +1192,6 @@ def test_job_private_instance_preemptible(client: BatchClient):
     assert 'job-private' in status['status']['worker'], str((status, b.debug_info()))
 
 
-@pytest.mark.timeout(6 * 60)
 def test_job_private_instance_nonpreemptible(client: BatchClient):
     bb = create_batch(client)
     resources = {'machine_type': smallest_machine_type(), 'preemptible': False}
@@ -1380,7 +1458,7 @@ def test_submit_update_to_deleted_batch(client: BatchClient):
         assert False
 
 
-@pytest.mark.timeout(12 * 60)
+@pytest.mark.timeout(24 * 60)
 def test_region(client: BatchClient):
     CLOUD = os.environ['HAIL_CLOUD']
 

@@ -55,37 +55,6 @@ def test_multi_write():
     assert hl.vds.read_vds(path1)._same(vds1)
     assert hl.vds.read_vds(path2)._same(vds2)
 
-@fails_local_backend
-@fails_service_backend
-def test_conversion_equivalence():
-    gvcfs = [os.path.join(resource('gvcfs'), '1kg_chr22', path) for path in ['HG00187.hg38.g.vcf.gz',
-                                                                             'HG00190.hg38.g.vcf.gz',
-                                                                             'HG00308.hg38.g.vcf.gz',
-                                                                             'HG00313.hg38.g.vcf.gz',
-                                                                             'HG00320.hg38.g.vcf.gz']]
-
-    tmpdir = new_temp_file()
-    mt_path = new_temp_file()
-    vds_path = new_temp_file()
-
-    hl.experimental.run_combiner(gvcfs, mt_path, tmpdir, use_exome_default_intervals=True, reference_genome='GRCh38',
-                                 overwrite=True, intervals=[hl.eval(hl.parse_locus_interval('chr22', 'GRCh38'))],
-                                 key_by_locus_and_alleles=True)
-
-    svcr = hl.read_matrix_table(mt_path)
-
-    vds = hl.vds.VariantDataset.from_merged_representation(svcr).checkpoint(vds_path)
-    ref = vds.reference_data
-    var = vds.variant_data
-
-    assert svcr.aggregate_entries(hl.agg.count_where(hl.is_defined(svcr.END))) == ref.aggregate_entries(hl.agg.count())
-    assert svcr.aggregate_entries(hl.agg.count()) == ref.aggregate_entries(hl.agg.count()) + var.aggregate_entries(
-        hl.agg.count())
-
-    svcr_readback = hl.vds.to_merged_sparse_mt(vds, ref_allele_function=lambda ht: svcr.key_rows_by('locus').index_rows(ht.locus).alleles[0])
-
-    assert svcr._same(svcr_readback, reorder_fields=True)
-
 
 def test_sampleqc_old_new_equivalence():
     vds = hl.vds.read_vds(os.path.join(resource('vds'), '1kg_chr22_5_samples.vds'))
@@ -705,3 +674,19 @@ def test_filter_intervals_table():
     vds_filt = hl.vds.filter_intervals(vds, filter_intervals)
 
     assert vds_filt.variant_data.rows().select()._same(filter_vars)
+
+
+# issue 13183
+def test_ref_block_does_not_densify_to_next_contig():
+    vds = hl.vds.read_vds(os.path.join(resource('vds'), '1kg_2samples_starts.vds'))
+    vds = hl.vds.filter_chromosomes(vds, keep=['chr1', 'chr2'])
+    ref = vds.reference_data
+    var = vds.variant_data.filter_entries(False)
+    # max out all chr1 refblocks, and truncate all chr2 refblocks so that nothing in chr2 should be densified
+    ref = ref.annotate_entries(END=hl.if_else(ref.locus.contig == 'chr1',
+                                              hl.parse_locus_interval('chr1', reference_genome=ref.locus.dtype.reference_genome).end.position,
+                                              ref.locus.position))
+    vds = hl.vds.VariantDataset(reference_data=ref, variant_data=var)
+    mt = hl.vds.to_dense_mt(vds)
+    mt = mt.filter_rows(mt.locus.contig == 'chr2')
+    assert mt.aggregate_entries(hl.agg.count()) == 0

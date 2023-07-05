@@ -118,6 +118,8 @@ object Children {
       as :+ body
     case StreamZipJoin(as, _, _, _, joinF) =>
       as :+ joinF
+    case StreamZipJoinProducers(contexts, _, makeProducer, _, _, _, joinF) =>
+      Array(contexts, makeProducer, joinF)
     case StreamMultiMerge(as, _) =>
       as
     case StreamFilter(a, name, cond) =>
@@ -169,6 +171,8 @@ object Children {
     case NDArrayQR(nd, _, _) =>
       Array(nd)
     case NDArraySVD(nd, _, _, _) =>
+      Array(nd)
+    case NDArrayEigh(nd, _, _) =>
       Array(nd)
     case NDArrayInv(nd, errorID) =>
       Array(nd)

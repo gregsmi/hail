@@ -41,7 +41,12 @@ steps:
       - name: auth-oauth2-client-secret
       - name: registry-push-credentials
       - name: hail-ci-0-1-github-oauth-token
-      - name: test-gsa-key
+      - name: testns-test-gsa-key
+      - name: testns-test-dev-gsa-key
+      - name: testns-auth-gsa-key
+      - name: testns-batch-gsa-key
+      - name: testns-ci-gsa-key
+      - name: testns-grafana-gsa-key
       - name: test-aws-key
         clouds:
           - gcp
@@ -198,6 +203,19 @@ steps:
     image:
       valueFrom: create_certs_image.image
     script: |
+
+      {% if not deploy %}
+      kubectl get secret -n {{ default_ns.name }} ssl-config-hail-root \
+        --template={% raw %}'{{index .data "hail-root-cert.pem"}}'{% endraw %} \
+        | base64 --decode \
+        | openssl x509 -checkend 0 -noout -in -
+
+      if [ "$?" -ne 0 ]
+      then
+          kubectl delete secret -n {{ default_ns.name }} ssl-config-hail-root
+      fi
+      {% endif %}
+
       openssl req -new -x509 -subj /CN=hail-root -nodes -newkey rsa:4096 -keyout hail-root-key.pem -out hail-root-cert.pem
       until kubectl get secret -n {{ default_ns.name }} ssl-config-hail-root
       do
@@ -362,6 +380,8 @@ steps:
         script: /io/sql/support-azure-oauth.sql
       - name: change-username-collation
         script: /io/sql/change-username-collation.sql
+      - name: add-hail-identity-uid
+        script: /io/sql/add-hail-identity-uid.sql
     inputs:
       - from: /repo/auth/sql
         to: /io/sql
@@ -464,11 +484,12 @@ steps:
     image:
       valueFrom: ci_utils_image.image
     script: |
-      kubectl -n {{ default_ns.name }} get -o json secret test-gsa-key | jq '{apiVersion, kind, type, data, metadata: {name: "auth-gsa-key"}}' | kubectl -n {{ default_ns.name }} apply -f -
-      kubectl -n {{ default_ns.name }} get -o json secret test-gsa-key | jq '{apiVersion, kind, type, data, metadata: {name: "batch-gsa-key"}}' | kubectl -n {{ default_ns.name }} apply -f -
-      kubectl -n {{ default_ns.name }} get -o json secret test-gsa-key | jq '{apiVersion, kind, type, data, metadata: {name: "ci-gsa-key"}}' | kubectl -n {{ default_ns.name }} apply -f -
-      kubectl -n {{ default_ns.name }} get -o json secret test-gsa-key | jq '{apiVersion, kind, type, data, metadata: {name: "test-dev-gsa-key"}}' | kubectl -n {{ default_ns.name }} apply -f -
-      kubectl -n {{ default_ns.name }} get -o json secret test-gsa-key | jq '{apiVersion, kind, type, data, metadata: {name: "grafana-gsa-key"}}' | kubectl -n {{ default_ns.name }} apply -f -
+      kubectl -n {{ default_ns.name }} get -o json secret testns-test-gsa-key | jq '{apiVersion, kind, type, data, metadata: {name: "test-gsa-key"}}' | kubectl -n {{ default_ns.name }} apply -f -
+      kubectl -n {{ default_ns.name }} get -o json secret testns-test-dev-gsa-key | jq '{apiVersion, kind, type, data, metadata: {name: "test-dev-gsa-key"}}' | kubectl -n {{ default_ns.name }} apply -f -
+      kubectl -n {{ default_ns.name }} get -o json secret testns-auth-gsa-key | jq '{apiVersion, kind, type, data, metadata: {name: "auth-gsa-key"}}' | kubectl -n {{ default_ns.name }} apply -f -
+      kubectl -n {{ default_ns.name }} get -o json secret testns-batch-gsa-key | jq '{apiVersion, kind, type, data, metadata: {name: "batch-gsa-key"}}' | kubectl -n {{ default_ns.name }} apply -f -
+      kubectl -n {{ default_ns.name }} get -o json secret testns-ci-gsa-key | jq '{apiVersion, kind, type, data, metadata: {name: "ci-gsa-key"}}' | kubectl -n {{ default_ns.name }} apply -f -
+      kubectl -n {{ default_ns.name }} get -o json secret testns-grafana-gsa-key | jq '{apiVersion, kind, type, data, metadata: {name: "grafana-gsa-key"}}' | kubectl -n {{ default_ns.name }} apply -f -
     scopes:
       - test
       - dev
@@ -563,34 +584,6 @@ steps:
       - deploy_auth_driver_service_account
       - create_test_gsa_keys
       - create_test_database_server_config
-  - kind: runImage
-    name: create_initial_user
-    runIfRequested: true
-    image:
-      valueFrom: auth_image.image
-    script: |
-      set -ex
-      export NAMESPACE={{ default_ns.name }}
-      export CLOUD={{ global.cloud }}
-      python3 /io/create_initial_account.py {{ code.username }} {{ code.login_id }}
-    serviceAccount:
-      name: admin
-      namespace:
-        valueFrom: default_ns.name
-    secrets:
-      - name:
-          valueFrom: auth_database.user_secret_name
-        namespace:
-          valueFrom: default_ns.name
-        mountPath: /sql-config
-    inputs:
-      - from: /repo/ci/create_initial_account.py
-        to: /io/create_initial_account.py
-    dependsOn:
-      - default_ns
-      - auth_image
-      - merge_code
-      - auth_database
   - kind: buildImage2
     name: hailgenetics_vep_grch37_85_image
     dockerFile: /io/repo/docker/hailgenetics/vep/grch37/85/Dockerfile
@@ -953,6 +946,7 @@ steps:
     dependsOn:
       - default_ns
       - hailgenetics_hailtop_image
+      - create_test_gsa_keys
       - merge_code
   - kind: runImage
     name: test_hail_java
@@ -1222,7 +1216,7 @@ steps:
       export HAIL_TEST_AZURE_ACCOUNT=hailtest
       export HAIL_TEST_AZURE_CONTAINER=hail-test-4nxei
       # Required for SAS testing on Azure
-      export HAIL_TEST_AZURE_RESGRP=haildev
+      export HAIL_TEST_AZURE_RESGRP=hail-dev
       export HAIL_TEST_AZURE_SUBID=22cd45fe-f996-4c51-af67-ef329d977519
       export AZURE_APPLICATION_CREDENTIALS=/test-azure-key/credentials.json
 
@@ -1323,6 +1317,9 @@ steps:
     numSplits: 48
     image:
       valueFrom: hail_run_image.image
+    resources:
+      memory: standard
+      cpu: '2'
     script: |
       set -ex
       cd /io
@@ -1657,7 +1654,7 @@ steps:
       - dev
     dependsOn:
       - default_ns
-      - base_image
+      - hail_ubuntu_image
       - create_certs
       - copy_third_party_images
   - kind: deploy
@@ -1709,6 +1706,36 @@ steps:
       - create_dummy_oauth2_client_secret
       - create_certs
       - create_accounts
+  - kind: runImage
+    name: create_initial_user
+    runIfRequested: true
+    image:
+      valueFrom: hailgenetics_hailtop_image.image
+    script: |
+      set -ex
+      {% if default_ns.name == "default" %}
+      hailctl auth create-user --developer {{ code.username }} {{ code.login_id }}
+      {% else %}
+      hailctl auth create-user \
+        --developer \
+        --hail-identity {{ code.hail_identity }} \
+        --hail-credentials-secret-name {{ code.username }}-gsa-key \
+        {{ code.username }} {{ code.login_id }}
+      {% endif %}
+    secrets:
+      - name: worker-deploy-config
+        namespace:
+          valueFrom: default_ns.name
+        mountPath: /deploy-config
+      - name: test-dev-tokens
+        namespace:
+          valueFrom: default_ns.name
+        mountPath: /user-tokens
+    dependsOn:
+      - default_ns
+      - hailgenetics_hailtop_image
+      - merge_code
+      - deploy_auth
   - kind: runImage
     name: delete_monitoring_tables
     image:
@@ -1803,10 +1830,6 @@ steps:
         namespace:
           valueFrom: default_ns.name
         mountPath: /user-tokens
-      - name: ssl-config-monitoring-tests
-        namespace:
-          valueFrom: default_ns.name
-        mountPath: /ssl-config
     timeout: 300
     inputs:
       - from: /repo/monitoring/test
@@ -1996,6 +2019,9 @@ steps:
         online: true
       - name: fix-default-namespace-record
         script: /io/sql/fix-default-namespace.py
+        online: true
+      - name: record-failure-notifications
+        script: /io/sql/record-failure-notifications.sql
         online: true
     inputs:
       - from: /repo/ci/sql
@@ -2238,6 +2264,21 @@ steps:
       - name: set-test-and-dev-pools-to-max-16-standing-16
         script: /io/sql/set-test-and-dev-pools-to-max-16-standing-16.py
         online: true
+      - name: set-test-min-pool-size-to-1
+        script: /io/sql/set-test-min-pool-size-to-1.py
+        online: true
+      - name: dedup-billing-project-users-v2
+        script: /io/sql/dedup_billing_project_users_v2.py
+        online: true
+      - name: list-jobs-extra-indices
+        script: /io/sql/list-jobs-extra-indices.sql
+        online: true
+      - name: dedup-billing-project-users-by-date
+        script: /io/sql/dedup_billing_project_users_by_date.py
+        online: true
+      - name: add-jobs-ready-time
+        script: /io/sql/add-jobs-ready-time.sql
+        online: true
     inputs:
       - from: /repo/batch/sql
         to: /io/sql
@@ -2394,7 +2435,7 @@ steps:
       - create_certs
   - kind: runImage
     name: test_hail_python_service_backend
-    numSplits: 64
+    numSplits: 32
     image:
       valueFrom: hail_run_image.image
     resources:
@@ -2413,11 +2454,14 @@ steps:
       export HAIL_DOCTEST_DATA_DIR="{{ global.test_storage_uri }}/{{ upload_test_resources_to_blob_storage.token }}/doctest/data/"
       export HAIL_GENETICS_VEP_GRCH37_85_IMAGE={{ hailgenetics_vep_grch37_85_image.image }}
       export GOOGLE_APPLICATION_CREDENTIALS=/test-gsa-key/key.json
+      export AZURE_APPLICATION_CREDENTIALS=/test-gsa-key/key.json
 
-      if [[ "$HAIL_CLOUD" = "gcp" ]]
-      then
-          export GCS_REQUESTER_PAYS_PROJECT=broad-ctsa
-      fi
+      {% if global.cloud == "gcp" %}
+      export GCS_REQUESTER_PAYS_PROJECT=broad-ctsa
+      {% elif global.cloud == "azure" %}
+      export HAIL_AZURE_SUBSCRIPTION_ID={{ global.azure_subscription_id }}
+      export HAIL_AZURE_RESOURCE_GROUP={{ global.azure_resource_group }}
+      {% endif %}
 
       export HAIL_SHUFFLE_MAX_BRANCH=4
       export HAIL_SHUFFLE_CUTOFF=1000000
@@ -2463,10 +2507,6 @@ steps:
         namespace:
           valueFrom: default_ns.name
         mountPath: /user-tokens
-      - name: ssl-config-batch-tests
-        namespace:
-          valueFrom: default_ns.name
-        mountPath: /ssl-config
     dependsOn:
       - default_ns
       - merge_code
@@ -2479,6 +2519,39 @@ steps:
       - upload_test_resources_to_blob_storage
       - build_hail_jar_and_wheel
       - hailgenetics_vep_grch37_85_image
+  - kind: runImage
+    name: test_hail_spark_conf_requester_pays_parsing
+    image:
+      valueFrom: hail_run_image.image
+    resources:
+      cpu: '0.5'
+      preemptible: False
+    script: |
+      set -ex
+      tar xvf /io/wheel-container.tar
+      python3 -m pip install --no-dependencies hail-*-py3-none-any.whl
+
+      export YOU_MAY_OVERWRITE_MY_SPARK_DEFAULTS_CONF_AND_HAILCTL_SETTINGS=1
+
+      python3 -m pytest \
+              -Werror:::hail -Werror:::hailtop -Werror::ResourceWarning \
+              --log-cli-level=INFO \
+              -s \
+              -r A \
+              -vv \
+              --instafail \
+              --durations=50 \
+              /io/test_requester_pays_parsing.py
+    inputs:
+      - from: /wheel-container.tar
+        to: /io/wheel-container.tar
+      - from: /repo/hail/scripts/test_requester_pays_parsing.py
+        to: /io/test_requester_pays_parsing.py
+    dependsOn:
+      - default_ns
+      - merge_code
+      - hail_run_image
+      - build_hail_jar_and_wheel
   - kind: buildImage2
     name: netcat_ubuntu_image
     publishAs: netcat
@@ -2553,10 +2626,6 @@ steps:
         namespace:
           valueFrom: default_ns.name
         mountPath: /user-tokens
-      - name: ssl-config-memory-tests
-        namespace:
-          valueFrom: default_ns.name
-        mountPath: /ssl-config
       - name: test-gsa-key
         namespace:
           valueFrom: default_ns.name
@@ -2609,7 +2678,7 @@ steps:
               --log-date-format="%Y-%m-%dT%H:%M:%S" \
               --log-format="%(asctime)s %(levelname)s %(name)s %(filename)s:%(lineno)d:%(funcName)s %(message)s" \
               -k "not test_scale and not test_invariants" \
-              --timeout=120 \
+              --timeout=360 \
               /io/test/
     inputs:
       - from: /repo/batch/test
@@ -2631,10 +2700,6 @@ steps:
         namespace:
           valueFrom: default_ns.name
         mountPath: /dev-tokens
-      - name: ssl-config-batch-tests
-        namespace:
-          valueFrom: default_ns.name
-        mountPath: /ssl-config
       - name: test-gsa-key
         namespace:
           valueFrom: default_ns.name
@@ -2683,10 +2748,6 @@ steps:
         namespace:
           valueFrom: default_ns.name
         mountPath: /dev-tokens
-      - name: ssl-config-batch-tests
-        namespace:
-          valueFrom: default_ns.name
-        mountPath: /ssl-config
     alwaysRun: true
     dependsOn:
       - create_deploy_config
@@ -2839,10 +2900,6 @@ steps:
         namespace:
           valueFrom: default_ns.name
         mountPath: /user-tokens
-      - name: ssl-config-ci-tests
-        namespace:
-          valueFrom: default_ns.name
-        mountPath: /ssl-config
     timeout: 5400
     inputs:
       - from: /repo/ci/test
@@ -2887,7 +2944,7 @@ steps:
               -vv \
               --instafail \
               --durations=50 \
-              --timeout=120 \
+              --timeout=360 \
               /io/test/hailtop/batch/
     inputs:
       - from: /repo/hail/python/test
@@ -2908,10 +2965,6 @@ steps:
         namespace:
           valueFrom: default_ns.name
         mountPath: /test-gsa-key
-      - name: ssl-config-batch-tests
-        namespace:
-          valueFrom: default_ns.name
-        mountPath: /ssl-config
     dependsOn:
       - hailgenetics_hail_image
       - hailgenetics_hailtop_image
@@ -3029,10 +3082,6 @@ steps:
         namespace:
           valueFrom: default_ns.name
         mountPath: /test-gsa-key
-      - name: ssl-config-batch-tests
-        namespace:
-          valueFrom: default_ns.name
-        mountPath: /ssl-config
     dependsOn:
       - hailgenetics_hail_image
       - upload_query_jar
@@ -3528,10 +3577,6 @@ steps:
         namespace:
           valueFrom: default_ns.name
         mountPath: /deploy-config
-      - name: ssl-config-services-java-tests
-        namespace:
-          valueFrom: default_ns.name
-        mountPath: /ssl-config
       - name: test-gsa-key
         namespace:
           valueFrom: default_ns.name
@@ -3578,10 +3623,6 @@ steps:
         namespace:
           valueFrom: default_ns.name
         mountPath: /deploy-config
-      - name: ssl-config-services-java-tests
-        namespace:
-          valueFrom: default_ns.name
-        mountPath: /ssl-config
     timeout: 1200
     dependsOn:
       - default_ns
@@ -3623,10 +3664,6 @@ steps:
         namespace:
           valueFrom: default_ns.name
         mountPath: /user-tokens
-      - name: ssl-config-batch-tests
-        namespace:
-          valueFrom: default_ns.name
-        mountPath: /ssl-config
     alwaysRun: true
     timeout: 300
     dependsOn:
@@ -3674,10 +3711,6 @@ steps:
         namespace:
           valueFrom: default_ns.name
         mountPath: /user-tokens
-      - name: ssl-config-batch-tests
-        namespace:
-          valueFrom: default_ns.name
-        mountPath: /ssl-config
     scopes:
       - test
       - dev
@@ -3745,9 +3778,9 @@ steps:
     alwaysRun: true
     script: |
       set -e -o pipefail
-      AZURE_USERNAME=$(jq -r '.appId' /test-gsa-key/key.json)
-      AZURE_PASSWORD=$(jq -r '.password' /test-gsa-key/key.json)
-      AZURE_TENANT_ID=$(jq -r '.tenant' /test-gsa-key/key.json)
+      AZURE_USERNAME=$(jq -r '.appId' /batch-gsa-key/key.json)
+      AZURE_PASSWORD=$(jq -r '.password' /batch-gsa-key/key.json)
+      AZURE_TENANT_ID=$(jq -r '.tenant' /batch-gsa-key/key.json)
       az login --service-principal -u $AZURE_USERNAME -p $AZURE_PASSWORD --tenant $AZURE_TENANT_ID
       set +e
       set -x
@@ -3767,10 +3800,10 @@ steps:
           --query "[?tags.namespace == '{{ default_ns.name }}'].name" \
         | xargs -n1 -r sh -c 'az deployment delete --name "$1" || true' argv0
     secrets:
-      - name: test-gsa-key
+      - name: batch-gsa-key
         namespace:
           valueFrom: default_ns.name
-        mountPath: /test-gsa-key
+        mountPath: /batch-gsa-key
     scopes:
       - dev
       - test

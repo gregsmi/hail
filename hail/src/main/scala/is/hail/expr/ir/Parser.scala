@@ -1079,6 +1079,12 @@ object IRParser {
         ir_value_expr(env)(it).map { nd =>
           NDArraySVD(nd, fullMatrices, computeUV, errorID)
         }
+      case "NDArrayEigh" =>
+        val errorID = int32_literal(it)
+        val eigvalsOnly = boolean_literal(it)
+        ir_value_expr(env)(it).map { nd =>
+          NDArrayEigh(nd, eigvalsOnly, errorID)
+        }
       case "NDArrayInv" =>
         val errorID = int32_literal(it)
         ir_value_expr(env)(it).map{ nd => NDArrayInv(nd, errorID) }
@@ -1127,6 +1133,19 @@ object IRParser {
           as <- names.mapRecur(_ => ir_value_expr(env)(it))
           body <- ir_value_expr(env.bindEval(names.zip(as.map(a => tcoerce[TStream](a.typ).elementType)): _*))(it)
         } yield StreamZip(as, names, body, behavior, errorID)
+      case "StreamZipJoinProducers" =>
+        val key = identifiers(it)
+        val ctxName = identifier(it)
+        val curKey = identifier(it)
+        val curVals = identifier(it)
+        for {
+          ctxs <- ir_value_expr(env)(it)
+          makeProducer <- ir_value_expr(env.bindEval(ctxName, TIterable.elementType(ctxs.typ)))(it)
+          body <- {
+            val structType = TIterable.elementType(makeProducer.typ).asInstanceOf[TStruct]
+            ir_value_expr(env.bindEval((curKey, structType.typeAfterSelectNames(key)), (curVals, TArray(structType))))(it)
+          }
+        } yield StreamZipJoinProducers(ctxs, ctxName, makeProducer, key, curKey, curVals, body)
       case "StreamZipJoin" =>
         val nStreams = int32_literal(it)
         val key = identifiers(it)
@@ -1986,10 +2005,6 @@ object IRParser {
       case "JavaMatrix" =>
         val name = identifier(it)
         done(env.irMap(name).asInstanceOf[MatrixIR])
-      case "JavaMatrixVectorRef" =>
-        val id = int32_literal(it)
-        val idx = int32_literal(it)
-        done(HailContext.get.irVectors(id)(idx).asInstanceOf[MatrixIR])
     }
   }
 

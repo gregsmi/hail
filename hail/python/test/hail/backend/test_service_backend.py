@@ -9,18 +9,15 @@ from hail.backend.service_backend import ServiceBackend
 @skip_unless_service_backend()
 def test_tiny_driver_has_tiny_memory():
     try:
-        hl.utils.range_table(100_000_000, 50).to_pandas()
-    except Exception as exc:
-        # Sometimes the JVM properly OOMs, sometimes it just dies.
-        assert (
-            'java.lang.OutOfMemoryError: Java heap space' in exc.args[0] or
-            'batch.worker.jvm_entryway_protocol.EndOfStream' in exc.args[0]
-        )
+        hl.eval(hl.range(1024 * 1024).map(lambda x: hl.range(1024 * 1024)))
+    except hl.utils.FatalError as exc:
+        assert "HailException: Hail off-heap memory exceeded maximum threshold: limit " in exc.args[0]
     else:
         assert False
 
 
 @skip_unless_service_backend()
+@test_timeout(batch=6 * 60)
 def test_big_driver_has_big_memory():
     backend = hl.current_backend()
     assert isinstance(backend, ServiceBackend)
@@ -62,7 +59,7 @@ def test_big_worker_has_big_memory():
 
 
 @skip_unless_service_backend()
-@test_timeout(batch=12 * 60)
+@test_timeout(batch=24 * 60)
 def test_regions():
     backend = hl.current_backend()
     assert isinstance(backend, ServiceBackend)

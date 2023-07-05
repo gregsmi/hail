@@ -10,6 +10,7 @@ import is.hail.expr.ir.lowering.TableStageDependency
 import is.hail.expr.ir.streams.StreamProducer
 import is.hail.io.avro.{AvroPartitionReader, AvroSchemaSerializer}
 import is.hail.io.bgen.BgenPartitionReader
+import is.hail.io.vcf.{GVCFPartitionReader, VCFHeaderInfo}
 import is.hail.io.{AbstractTypedCodecSpec, BufferSpec, TypedCodecSpec}
 import is.hail.rvd.RVDSpecMaker
 import is.hail.types.encoded._
@@ -20,6 +21,7 @@ import is.hail.types.physical.stypes.interfaces._
 import is.hail.types.virtual._
 import is.hail.types.{RIterable, RStruct, TypeWithRequiredness, tcoerce}
 import is.hail.utils.{FastIndexedSeq, _}
+import org.json4s.JsonAST.{JNothing, JString}
 import org.json4s.{DefaultFormats, Extraction, Formats, JValue, ShortTypeHints}
 
 import java.io.OutputStream
@@ -38,11 +40,15 @@ sealed trait IR extends BaseIR {
     _typ
   }
 
-  lazy val children: IndexedSeq[BaseIR] =
+  protected lazy val childrenSeq: IndexedSeq[BaseIR] =
     Children(this)
 
-  override def copy(newChildren: IndexedSeq[BaseIR]): IR =
+  protected override def copy(newChildren: IndexedSeq[BaseIR]): IR =
     Copy(this, newChildren)
+
+  override def mapChildren(f: BaseIR => BaseIR): IR = super.mapChildren(f).asInstanceOf[IR]
+
+  override def mapChildrenWithIndex(f: (BaseIR, Int) => BaseIR): IR = super.mapChildrenWithIndex(f).asInstanceOf[IR]
 
   override def deepCopy(): this.type = {
 
@@ -111,7 +117,7 @@ object EncodedLiteral {
       case ts: PString => Str(ts.loadString(addr))
       case _ =>
         val etype = EType.defaultFromPType(pt)
-        val codec = TypedCodecSpec(etype, pt.virtualType, BufferSpec.defaultUncompressed)
+        val codec = TypedCodecSpec(etype, pt.virtualType, BufferSpec.wireSpec)
         val bytes = codec.encodeArrays(ctx, pt, addr)
         EncodedLiteral(codec, bytes)
     }
@@ -352,6 +358,11 @@ final case class StreamMultiMerge(as: IndexedSeq[IR], key: IndexedSeq[String]) e
   override def typ: TStream = tcoerce[TStream](super.typ)
 }
 
+final case class StreamZipJoinProducers(contexts: IR, ctxName: String, makeProducer: IR,
+  key: IndexedSeq[String], curKey: String, curVals: String, joinF: IR) extends IR {
+  override def typ: TStream = tcoerce[TStream](super.typ)
+}
+
 /**
   * The StreamZipJoin node assumes that input streams have distinct keys. If input streams
   * do not have distinct keys, the key that is included in the result is undefined, but
@@ -520,6 +531,17 @@ object NDArrayInv {
 final case class NDArrayQR(nd: IR, mode: String, errorID: Int) extends IR
 
 final case class NDArraySVD(nd: IR, fullMatrices: Boolean, computeUV: Boolean, errorID: Int) extends IR
+
+object NDArrayEigh {
+  def pTypes(eigvalsOnly: Boolean, req: Boolean): PType = {
+    if (eigvalsOnly) {
+      PCanonicalNDArray(PFloat64Required, 1, req)
+    } else {
+      PCanonicalTuple(req, PCanonicalNDArray(PFloat64Required, 1, true), PCanonicalNDArray(PFloat64Required, 2, true))
+    }
+  }
+}
+final case class NDArrayEigh(nd: IR, eigvalsOnly: Boolean, errorID: Int) extends IR
 
 final case class NDArrayInv(nd: IR, errorID: Int) extends IR
 
@@ -768,6 +790,9 @@ object PartitionReader {
       classOf[PartitionZippedNativeReader],
       classOf[PartitionZippedIndexedNativeReader],
       classOf[BgenPartitionReader],
+      classOf[GVCFPartitionReader],
+      classOf[TextInputFilterAndReplace],
+      classOf[VCFHeaderInfo],
       classOf[AbstractTypedCodecSpec],
       classOf[TypedCodecSpec],
       classOf[AvroPartitionReader]),
@@ -785,6 +810,22 @@ object PartitionReader {
         val path = (jv \ "path").extract[String]
         val spec = TableNativeReader.read(ctx.fs, path, None).spec
         PartitionNativeIntervalReader(ctx.stateManager, path, spec, (jv \ "uidFieldName").extract[String])
+      case "GVCFPartitionReader" =>
+        val header = VCFHeaderInfo.fromJSON((jv \ "header"))
+        val callFields = (jv \ "callFields").extract[Set[String]]
+        val entryFloatType = IRParser.parseType((jv \ "entryFloatType").extract[String])
+        val arrayElementsRequired = (jv \ "arrayElementsRequired").extract[Boolean]
+        val rg = (jv \ "rg") match {
+          case JString(s) => Some(s)
+          case JNothing => None
+        }
+        val contigRecoding = (jv \ "contigRecoding").extract[Map[String, String]]
+        val skipInvalidLoci = (jv \ "skipInvalidLoci").extract[Boolean]
+        val filterAndReplace = (jv \ "filterAndReplace").extract[TextInputFilterAndReplace]
+        val entriesFieldName = (jv \ "entriesFieldName").extract[String]
+        val uidFieldName = (jv \ "uidFieldName").extract[String]
+        GVCFPartitionReader(header, callFields, entryFloatType, arrayElementsRequired, rg, contigRecoding,
+          skipInvalidLoci, filterAndReplace, entriesFieldName, uidFieldName)
       case _ => jv.extract[PartitionReader]
     }
   }
