@@ -350,6 +350,7 @@ typing-extensions==4.6.3
     # via
     #   -c hail/hail/python/hailtop/pinned-requirements.txt
     #   azure-core
+    #   azure-storage-blob
     #   janus
     #   rich
     #   typer
