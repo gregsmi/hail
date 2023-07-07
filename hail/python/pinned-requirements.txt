@@ -51,10 +51,6 @@ azure-mgmt-storage==20.1.0
     # via
     #   -c hail/hail/python/hailtop/pinned-requirements.txt
     #   -r hail/hail/python/hailtop/requirements.txt
-azure-mgmt-core==1.4.0
-    # via azure-mgmt-storage
-azure-mgmt-storage==20.1.0
-    # via -r hail/hail/python/hailtop/requirements.txt
 azure-storage-blob==12.16.0
     # via
     #   -c hail/hail/python/hailtop/pinned-requirements.txt
@@ -354,6 +350,7 @@ typing-extensions==4.6.3
     # via
     #   -c hail/hail/python/hailtop/pinned-requirements.txt
     #   azure-core
+    #   azure-storage-blob
     #   janus
     #   rich
     #   typer
