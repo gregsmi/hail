@@ -34,4 +34,5 @@ AUTHORIZED_USERS = [
     User('iris-garden', 'irademac'),
     User('gregsmi', 'gregsmi'),
     User('ehigham', 'ehigham', [COMPILER_TEAM]),
+    User('sjparsa', 'parsa'),
 ]

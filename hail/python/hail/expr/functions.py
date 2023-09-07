@@ -79,10 +79,10 @@ def _quantile_from_cdf(cdf, q):
     def compute(cdf):
         n = cdf.ranks[cdf.ranks.length() - 1]
         pos = hl.int64(q * n) + 1
-        idx = hl.max(0, hl.min(cdf.values.length() - 1, _lower_bound(cdf.ranks, pos) - 1))
+        idx = hl.max(0, hl.min(cdf['values'].length() - 1, _lower_bound(cdf.ranks, pos) - 1))
         res = hl.if_else(n == 0,
-                         hl.missing(cdf.values.dtype.element_type),
-                         cdf.values[idx])
+                         hl.missing(cdf['values'].dtype.element_type),
+                         cdf['values'][idx])
         return res
     return hl.rbind(cdf, compute)
 
@@ -233,11 +233,17 @@ def literal(x: Any, dtype: Optional[Union[HailType, str]] = None):
     -------
     :class:`.Expression`
     """
-    wrapper = {'has_expr': False}
+    wrapper = {'has_expr': False, 'has_free_vars': False}
 
     def typecheck_expr(t, x):
         if isinstance(x, Expression):
             wrapper['has_expr'] = True
+            wrapper['has_free_vars'] |= (
+                builtins.len(x._ir.free_vars) > 0 or
+                builtins.len(x._ir.free_agg_vars) > 0 or
+                builtins.len(x._ir.free_scan_vars) > 0
+            )
+
             if x.dtype != t:
                 raise TypeError(f"'literal': type mismatch: expected '{t}', found '{x.dtype}'")
             elif x._indices.source is not None:
@@ -264,6 +270,13 @@ def literal(x: Any, dtype: Optional[Union[HailType, str]] = None):
         except TypeError as e:
             raise TypeError("'literal': object did not match the passed type '{}'"
                             .format(dtype)) from e
+
+    if wrapper['has_free_vars']:
+        raise ValueError(
+            "'literal' cannot be used with hail expressions that depend "
+            "on other expressions. Use expression 'x' directly "
+            "instead of passing it to 'literal'."
+        )
 
     if wrapper['has_expr']:
         return literal(hl.eval(to_expr(x, dtype)), dtype)
