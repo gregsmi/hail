@@ -50,7 +50,8 @@ resource "azurerm_kubernetes_cluster" "vdc" {
   location            = var.resource_group.location
   dns_prefix          = "example"
 
-  automatic_channel_upgrade = "stable"
+  # Satisfies MSFT Azure security requirements.
+  automatic_channel_upgrade = "node-image"
 
   default_node_pool {
     name           = "nonpreempt"
