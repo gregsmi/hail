@@ -11,7 +11,6 @@ source $HAIL/devbin/functions.sh
 
 copy_images() {
     make -C $HAIL/docker/third-party copy
-
     make -C $HAIL/hail python/hail/hail_pip_version
     make -C $HAIL/docker/hailgenetics mirror-dockerhub-images
 }
