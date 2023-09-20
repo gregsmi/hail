@@ -31,7 +31,6 @@ BATCH_WORKER_IDENTITY=$(az identity show \
     --output tsv)
 
 echo "Creating $BUILD_IMAGE_RESOURCE_GROUP resource group..."
-
 az group delete --name $BUILD_IMAGE_RESOURCE_GROUP --yes || true
 az group create --name $BUILD_IMAGE_RESOURCE_GROUP --location ${LOCATION}
 
