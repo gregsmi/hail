@@ -57,8 +57,11 @@ resource "azurerm_kubernetes_cluster" "vdc" {
     name           = "nonpreempt"
     vm_size        = var.k8s_default_node_pool_machine_type
     vnet_subnet_id = azurerm_subnet.k8s_subnet.id
+    os_sku         = "AzureLinux"
 
     enable_auto_scaling = true
+
+    temporary_name_for_rotation = "tempdefault"
 
     min_count = 1
     max_count = 5
@@ -72,16 +75,13 @@ resource "azurerm_kubernetes_cluster" "vdc" {
     type = "SystemAssigned"
   }
 
-  addon_profile {
-    oms_agent {
-      enabled = true
-      log_analytics_workspace_id = azurerm_log_analytics_workspace.logs.id
-    }
+  oms_agent {
+    log_analytics_workspace_id = azurerm_log_analytics_workspace.logs.id
   }
 
   # https://github.com/hashicorp/terraform-provider-azurerm/issues/7396
   lifecycle {
-    ignore_changes = [addon_profile.0, default_node_pool.0.node_count]
+    ignore_changes = [default_node_pool.0.node_count]
   }
 }
 
@@ -90,6 +90,7 @@ resource "azurerm_kubernetes_cluster_node_pool" "vdc_nonpreemptible_pool" {
   kubernetes_cluster_id = azurerm_kubernetes_cluster.vdc.id
   vm_size               = var.k8s_user_pool_machine_type
   vnet_subnet_id        = azurerm_subnet.k8s_subnet.id
+  os_sku                = "AzureLinux"
 
   enable_auto_scaling = true
 
@@ -112,6 +113,7 @@ resource "azurerm_kubernetes_cluster_node_pool" "vdc_preemptible_pool" {
   kubernetes_cluster_id = azurerm_kubernetes_cluster.vdc.id
   vm_size               = var.k8s_user_pool_machine_type
   vnet_subnet_id        = azurerm_subnet.k8s_subnet.id
+  os_sku                = "AzureLinux"
 
   enable_auto_scaling = true
 
@@ -159,4 +161,7 @@ resource "azurerm_public_ip" "gateway_ip" {
   location            = var.resource_group.location
   sku                 = "Standard"
   allocation_method   = "Static"
+  lifecycle {
+    ignore_changes = [zones]
+  }  
 }
