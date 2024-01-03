@@ -8,8 +8,8 @@ import is.hail.expr.ir.lowering.LoweringPipeline
 import is.hail.expr.ir.streams.EmitStream
 import is.hail.io.fs.FS
 import is.hail.rvd.RVDContext
-import is.hail.types.physical.stypes.{PTypeReferenceSingleCodeType, SingleCodeType, StreamSingleCodeType}
 import is.hail.types.physical.stypes.interfaces.{NoBoxLongIterator, SStream}
+import is.hail.types.physical.stypes.{PTypeReferenceSingleCodeType, SingleCodeType, StreamSingleCodeType}
 import is.hail.types.physical.{PStruct, PType}
 import is.hail.types.virtual.Type
 import is.hail.utils._
@@ -29,21 +29,20 @@ object Compile {
     expectedCodeParamTypes: IndexedSeq[TypeInfo[_]], expectedCodeReturnType: TypeInfo[_],
     body: IR,
     optimize: Boolean = true,
-    writeIRs: Boolean = false,
     print: Option[PrintWriter] = None
   ): (Option[SingleCodeType], (HailClassLoader, FS, HailTaskContext, Region) => F) = {
 
-    val normalizeNames = new NormalizeNames(_.toString)
-    val normalizedBody = normalizeNames(body,
-      Env(params.map { case (n, _) => n -> n }: _*))
-    val k = CodeCacheKey(FastIndexedSeq[AggStateSig](), params.map { case (n, pt) => (n, pt) }, normalizedBody)
+    val normalizedBody = new NormalizeNames(_.toString)(ctx, body,
+      Env(params.map { case (n, _) => n -> n }: _*)
+    )
+    val k = CodeCacheKey(FastSeq[AggStateSig](), params.map { case (n, pt) => (n, pt) }, normalizedBody)
     (ctx.backend.lookupOrCompileCachedFunction[F](k) {
 
       var ir = body
       ir = Subst(ir, BindingEnv(params
         .zipWithIndex
         .foldLeft(Env.empty[IR]) { case (e, ((n, t), i)) => e.bind(n, In(i, t)) }))
-      ir = LoweringPipeline.compileLowerer(optimize).apply(ctx, ir).asInstanceOf[IR].noSharing
+      ir = LoweringPipeline.compileLowerer(optimize).apply(ctx, ir).asInstanceOf[IR].noSharing(ctx)
 
       TypeCheck(ctx, ir, BindingEnv.empty)
 
@@ -72,7 +71,7 @@ object Compile {
 
       val emitContext = EmitContext.analyze(ctx, ir)
       val rt = Emit(emitContext, ir, fb, expectedCodeReturnType, params.length)
-      CompiledFunction(rt, fb.resultWithIndex(writeIRs, print))
+      CompiledFunction(rt, fb.resultWithIndex(print))
     }).tuple
   }
 }
@@ -86,9 +85,9 @@ object CompileWithAggregators {
     body: IR,
     optimize: Boolean = true
   ): (Option[SingleCodeType], (HailClassLoader, FS, HailTaskContext, Region) => (F with FunctionWithAggRegion)) = {
-    val normalizeNames = new NormalizeNames(_.toString)
-    val normalizedBody = normalizeNames(body,
-      Env(params.map { case (n, _) => n -> n }: _*))
+    val normalizedBody = new NormalizeNames(_.toString)(ctx, body,
+      Env(params.map { case (n, _) => n -> n }: _*)
+    )
     val k = CodeCacheKey(aggSigs, params.map { case (n, pt) => (n, pt) }, normalizedBody)
     (ctx.backend.lookupOrCompileCachedFunction[F with FunctionWithAggRegion](k) {
 
@@ -96,7 +95,7 @@ object CompileWithAggregators {
       ir = Subst(ir, BindingEnv(params
         .zipWithIndex
         .foldLeft(Env.empty[IR]) { case (e, ((n, t), i)) => e.bind(n, In(i, t)) }))
-      ir = LoweringPipeline.compileLowerer(optimize).apply(ctx, ir).asInstanceOf[IR].noSharing
+      ir = LoweringPipeline.compileLowerer(optimize).apply(ctx, ir).asInstanceOf[IR].noSharing(ctx)
 
       TypeCheck(ctx, ir, BindingEnv(Env.fromSeq[Type](params.map { case (name, t) => name -> t.virtualType })))
 
@@ -171,14 +170,13 @@ object CompileIterator {
     ctx: ExecuteContext,
     body: IR,
     argTypeInfo: Array[ParamType],
-    writeIRs: Boolean,
     printWriter: Option[PrintWriter]
   ): (PType, (HailClassLoader, FS, HailTaskContext, Region) => F) = {
 
-    val fb = EmitFunctionBuilder.apply[F](ctx, s"stream_${body.getClass.getSimpleName}", argTypeInfo.toFastIndexedSeq, CodeParamType(BooleanInfo), Some("Emit.scala"))
+    val fb = EmitFunctionBuilder.apply[F](ctx, s"stream_${body.getClass.getSimpleName}", argTypeInfo.toFastSeq, CodeParamType(BooleanInfo), Some("Emit.scala"))
     val outerRegionField = fb.genFieldThisRef[Region]("outerRegion")
     val eltRegionField = fb.genFieldThisRef[Region]("eltRegion")
-    val setF = fb.newEmitMethod("setRegions", FastIndexedSeq(CodeParamType(typeInfo[Region]), CodeParamType(typeInfo[Region])), CodeParamType(typeInfo[Unit]))
+    val setF = fb.newEmitMethod("setRegions", FastSeq(CodeParamType(typeInfo[Region]), CodeParamType(typeInfo[Region])), CodeParamType(typeInfo[Unit]))
     setF.emit(Code(outerRegionField := setF.getCodeParam[Region](1), eltRegionField := setF.getCodeParam[Region](2)))
 
     val stepF = fb.apply_method
@@ -186,7 +184,7 @@ object CompileIterator {
 
     val outerRegion = outerRegionField
 
-    val ir = LoweringPipeline.compileLowerer(true)(ctx, body).asInstanceOf[IR].noSharing
+    val ir = LoweringPipeline.compileLowerer(true)(ctx, body).asInstanceOf[IR].noSharing(ctx)
     TypeCheck(ctx, ir)
 
     var elementAddress: Settable[Long] = null
@@ -212,7 +210,7 @@ object CompileIterator {
       val ret = cb.newLocal[Boolean]("stepf_ret")
       val Lreturn = CodeLabel()
 
-      cb.ifx(!didSetup, {
+      cb.if_(!didSetup, {
         optStream.toI(cb).get(cb) // handle missing, but bound stream producer above
 
         cb.assign(producer.elementRegion, eltRegionField)
@@ -221,7 +219,7 @@ object CompileIterator {
         cb.assign(eosField, false)
       })
 
-      cb.ifx(eosField, {
+      cb.if_(eosField, {
         cb.assign(ret, false)
         cb.goto(Lreturn)
       })
@@ -247,10 +245,10 @@ object CompileIterator {
     }
 
 
-    val getMB = fb.newEmitMethod("loadAddress", FastIndexedSeq(), LongInfo)
+    val getMB = fb.newEmitMethod("loadAddress", FastSeq(), LongInfo)
     getMB.emit(elementAddress.load())
 
-    (returnType, fb.resultWithIndex(writeIRs, printWriter))
+    (returnType, fb.resultWithIndex(printWriter))
   }
 
   def forTableMapPartitions(
@@ -265,9 +263,10 @@ object CompileIterator {
       Array[ParamType](
         CodeParamType(typeInfo[Object]),
         SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(typ0)),
-        SingleCodeEmitParamType(true, StreamSingleCodeType(true, streamElementType, true))),
-      false,
-      None)
+        SingleCodeEmitParamType(true, StreamSingleCodeType(true, streamElementType, true))
+      ),
+      None
+    )
     (eltPType, (theHailClassLoader, fs, htc, consumerCtx, v0, part) => {
       val stepper = makeStepper(theHailClassLoader, fs, htc, consumerCtx.partitionRegion)
       stepper.setRegions(consumerCtx.partitionRegion, consumerCtx.region)
@@ -292,8 +291,8 @@ object CompileIterator {
         CodeParamType(typeInfo[Object]),
         SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(ctxType)),
         SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(bcValsType))),
-      false,
-      None)
+      None
+    )
     (eltPType, (theHailClassLoader, fs, htc, consumerCtx, v0, v1) => {
       val stepper = makeStepper(theHailClassLoader, fs, htc, consumerCtx.partitionRegion)
       stepper.setRegions(consumerCtx.partitionRegion, consumerCtx.region)

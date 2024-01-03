@@ -67,7 +67,7 @@ object TableNativeWriter {
     RelationalWriter.scoped(path, overwrite, Some(ts.tableType))(
       ts.mapContexts { oldCtx =>
         val d = digitsNeeded(ts.numPartitions)
-        val partFiles = Literal(TArray(TString), Array.tabulate(ts.numPartitions)(i => s"${ partFile(d, i) }-").toFastIndexedSeq)
+        val partFiles = Literal(TArray(TString), Array.tabulate(ts.numPartitions)(i => s"${ partFile(d, i) }-").toFastSeq)
 
         zip2(oldCtx, ToStream(partFiles), ArrayZipBehavior.AssertSameLength) { (ctxElt, pf) =>
           MakeStruct(FastSeq(
@@ -82,13 +82,13 @@ object TableNativeWriter {
           Str(partFile(1, 0)), globalWriter)
 
         bindIR(parts) { fileCountAndDistinct =>
-          Begin(FastIndexedSeq(
+          Begin(FastSeq(
             WriteMetadata(MakeArray(GetField(writeGlobals, "filePath")),
               RVDSpecWriter(s"$path/globals", RVDSpecMaker(globalSpec, RVDPartitioner.unkeyed(ctx.stateManager, 1)))),
             WriteMetadata(ToArray(mapIR(ToStream(fileCountAndDistinct)) { fc => GetField(fc, "filePath") }),
               RVDSpecWriter(s"$path/rows", RVDSpecMaker(rowSpec, partitioner, IndexSpec.emptyAnnotation("../index", tcoerce[PStruct](pKey))))),
             WriteMetadata(ToArray(mapIR(ToStream(fileCountAndDistinct)) { fc =>
-              SelectFields(fc, FastIndexedSeq("partitionCounts", "distinctlyKeyed", "firstKey", "lastKey"))
+              SelectFields(fc, FastSeq("partitionCounts", "distinctlyKeyed", "firstKey", "lastKey"))
             }),
               TableSpecWriter(path, ts.tableType, "rows", "globals", "references", log = true))))
         }
@@ -231,14 +231,14 @@ case class PartitionNativeWriter(spec: AbstractTypedCodecSpec,
       }:_*)
 
       if (!keyFields.isEmpty) {
-        cb.ifx(distinctlyKeyed, {
+        cb.if_(distinctlyKeyed, {
           lastSeenSettable.loadI(cb).consume(cb, {
             // If there's no last seen, we are in the first row.
             cb.assign(firstSeenSettable, EmitValue.present(key.copyToRegion(cb, region, firstSeenSettable.st)))
           }, { lastSeen =>
             val comparator = EQ(lastSeenSettable.emitType.virtualType).codeOrdering(cb.emb.ecb, lastSeenSettable.st, key.st)
             val equalToLast = comparator(cb, lastSeenSettable, EmitValue.present(key))
-            cb.ifx(equalToLast.asInstanceOf[Value[Boolean]], {
+            cb.if_(equalToLast.asInstanceOf[Value[Boolean]], {
               cb.assign(distinctlyKeyed, false)
             })
           })
@@ -315,7 +315,7 @@ case class RVDSpecWriter(path: String, spec: RVDSpecMaker) extends MetadataWrite
     val n = cb.newLocal[Int]("n", a.loadLength())
     val i = cb.newLocal[Int]("i", 0)
     cb.assign(partFiles, Code.newArray[String](n))
-    cb.whileLoop(i < n, {
+    cb.while_(i < n, {
       val s = a.loadElement(cb, i).get(cb, "file name can't be missing!").asString
       cb += partFiles.update(i, s.loadString(cb))
       cb.assign(i, i + 1)
@@ -374,13 +374,13 @@ case class TableSpecWriter(path: String, typ: TableType, rowRelPath: String, glo
     val n = cb.newLocal[Int]("n", a.loadLength())
     val i = cb.newLocal[Int]("i", 0)
     cb.assign(partCounts, Code.newArray[Long](n))
-    cb.whileLoop(i < n, {
+    cb.while_(i < n, {
       val curElement =  a.loadElement(cb, i).get(cb, "writeMetadata annotation can't be missing").asBaseStruct
       val count = curElement.asBaseStruct.loadField(cb, "partitionCounts").get(cb, "part count can't be missing!").asLong.value
 
       if (hasKey) {
         // Only nonempty partitions affect first, last, and distinctlyKeyed.
-        cb.ifx(count cne 0L, {
+        cb.if_(count cne 0L, {
           val curFirst = curElement.loadField(cb, "firstKey").get(cb, const("firstKey of curElement can't be missing, part size was ") concat count.toS)
 
           val comparator = NEQ(lastSeenSettable.emitType.virtualType).codeOrdering(cb.emb.ecb, lastSeenSettable.st, curFirst.st)
@@ -408,16 +408,13 @@ object RelationalWriter {
 case class RelationalSetup(path: String, overwrite: Boolean, refs: Option[TableType]) extends MetadataWriter {
   lazy val maybeRefs = refs.map(typ => "references" -> (ReferenceGenome.getReferences(typ.rowType) ++ ReferenceGenome.getReferences(typ.globalType)))
 
-  def annotationType: Type = TStruct()
+  def annotationType: Type = TVoid
 
-  def writeMetadata(
-    writeAnnotations: => IEmitCode,
-    cb: EmitCodeBuilder,
-    region: Value[Region]): Unit = {
+  def writeMetadata(ignored: => IEmitCode, cb: EmitCodeBuilder, region: Value[Region]): Unit = {
     if (overwrite)
       cb += cb.emb.getFS.invoke[String, Boolean, Unit]("delete", path, true)
     else
-      cb.ifx(cb.emb.getFS.invoke[String, Boolean]("exists", path), cb._fatal(s"file already exists: $path"))
+      cb.if_(cb.emb.getFS.invoke[String, Boolean]("exists", path), cb._fatal(s"file already exists: $path"))
     cb += cb.emb.getFS.invoke[String, Unit]("mkDir", path)
 
     maybeRefs.foreach { case (refRelPath, refs) =>
@@ -452,7 +449,7 @@ case class RelationalWriter(path: String, overwrite: Boolean, maybeRefs: Option[
     if (overwrite)
       cb += cb.emb.getFS.invoke[String, Boolean, Unit]("delete", path, true)
     else
-      cb.ifx(cb.emb.getFS.invoke[String, Boolean]("exists", path), cb._fatal(s"file already exists: $path"))
+      cb.if_(cb.emb.getFS.invoke[String, Boolean]("exists", path), cb._fatal(s"file already exists: $path"))
     cb += cb.emb.getFS.invoke[String, Unit]("mkDir", path)
 
     maybeRefs.foreach { case (refRelPath, refs) =>
@@ -496,7 +493,7 @@ case class TableTextWriter(
 
     ts.mapContexts { oldCtx =>
       val d = digitsNeeded(ts.numPartitions)
-      val partFiles = Literal(TArray(TString), Array.tabulate(ts.numPartitions)(i => s"$folder/${ partFile(d, i) }-").toFastIndexedSeq)
+      val partFiles = Literal(TArray(TString), Array.tabulate(ts.numPartitions)(i => s"$folder/${ partFile(d, i) }-").toFastSeq)
 
       zip2(oldCtx, ToStream(partFiles), ArrayZipBehavior.AssertSameLength) { (ctxElt, pf) =>
         MakeStruct(FastSeq(
@@ -508,7 +505,7 @@ case class TableTextWriter(
       WritePartition(rows, file, lineWriter)
     } { (parts, _) =>
       val commit = TableTextFinalizer(path, ts.rowType, delimiter, header, exportType)
-      Begin(FastIndexedSeq(WriteMetadata(parts, commit)))
+      Begin(FastSeq(WriteMetadata(parts, commit)))
     }
   }
 }
@@ -597,7 +594,7 @@ case class TableTextFinalizer(outputPath: String, rowType: TStruct, delimiter: S
         cb += cb.emb.getFS.invoke[Array[String], String, Unit]("concatenateFiles", jFiles, const(outputPath))
 
         val i = cb.newLocal[Int]("i")
-        cb.forLoop(cb.assign(i, 0), i < jFiles.length, cb.assign(i, i + 1), {
+        cb.for_(cb.assign(i, 0), i < jFiles.length, cb.assign(i, i + 1), {
           cb += cb.emb.getFS.invoke[String, Boolean, Unit]("delete", jFiles(i), const(false))
         })
 
@@ -670,12 +667,12 @@ case class TableNativeFanoutWriter(
         )
         val globalWriter = PartitionNativeWriter(globalSpec, IndexedSeq(), s"$targetPath/globals/parts/", None, None)
         new FanoutWriterTarget(field, targetPath, rowSpec, keyPType, tableType, rowWriter, globalWriter)
-      }.toFastIndexedSeq
+      }.toFastSeq
     }
 
     val writeTables = ts.mapContexts { oldCtx =>
       val d = digitsNeeded(ts.numPartitions)
-      val partFiles = Literal(TArray(TString), Array.tabulate(ts.numPartitions)(i => s"${ partFile(d, i) }-").toFastIndexedSeq)
+      val partFiles = Literal(TArray(TString), Array.tabulate(ts.numPartitions)(i => s"${ partFile(d, i) }-").toFastSeq)
 
       zip2(oldCtx, ToStream(partFiles), ArrayZipBehavior.AssertSameLength) { (ctxElt, pf) =>
         MakeStruct(FastSeq(
@@ -691,7 +688,7 @@ case class TableNativeFanoutWriter(
     } { (parts, globals) =>
       bindIR(parts) { fileCountAndDistinct =>
         Begin(targets.zipWithIndex.map { case (target, index) =>
-          Begin(FastIndexedSeq(
+          Begin(FastSeq(
             WriteMetadata(
               MakeArray(
                 GetField(
@@ -720,13 +717,13 @@ case class TableNativeFanoutWriter(
               ToArray(mapIR(ToStream(fileCountAndDistinct)) { fc =>
                 SelectFields(
                   GetTupleElement(fc, index),
-                  FastIndexedSeq("partitionCounts", "distinctlyKeyed", "firstKey", "lastKey")
+                  FastSeq("partitionCounts", "distinctlyKeyed", "firstKey", "lastKey")
                 )
               }),
               TableSpecWriter(target.path, target.tableType, "rows", "globals", "references", log = true)
             )
           ))
-        }.toFastIndexedSeq)
+        }.toFastSeq)
       }
     }
 

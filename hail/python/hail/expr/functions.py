@@ -87,6 +87,25 @@ def _quantile_from_cdf(cdf, q):
     return hl.rbind(cdf, compute)
 
 
+@typecheck(raw_cdf=expr_struct())
+def _result_from_raw_cdf(raw_cdf):
+    levels = raw_cdf.levels
+    item_weights = hl._stream_range(hl.len(levels) - 1) \
+        .flatmap(lambda l: hl._stream_range(levels[l], levels[l+1])
+                 .map(lambda i: hl.struct(level=l, value=raw_cdf['items'][i]))) \
+        .aggregate(lambda x: hl.agg.group_by(x.value, hl.agg.sum(hl.bit_lshift(1, x.level))))
+    weights = item_weights.values()
+    ranks = weights.scan(lambda acc, weight: acc + weight, 0)
+    values = item_weights.keys()
+    return hl.struct(values=values, ranks=ranks, _compaction_counts=raw_cdf._compaction_counts)
+
+
+@typecheck(k=expr_int32, left=expr_struct(), right=expr_struct())
+def _cdf_combine(k, left, right):
+    t = tstruct(levels=tarray(tint32), items=tarray(tfloat64), _compaction_counts=tarray(tint32))
+    return _func('approxCDFCombine', t, k, left, right)
+
+
 @typecheck(cdf=expr_struct(), failure_prob=expr_oneof(expr_float32, expr_float64), all_quantiles=bool)
 def _error_from_cdf(cdf, failure_prob, all_quantiles=False):
     """Estimates error of approx_cdf aggregator, using Hoeffding's inequality.
@@ -126,6 +145,53 @@ def _error_from_cdf(cdf, failure_prob, all_quantiles=False):
         return hl.rbind(cdf, lambda cdf: hl.rbind(compute_sum(cdf), compute_global_error))
     else:
         return hl.rbind(cdf, lambda cdf: hl.rbind(compute_sum(cdf), compute_single_error))
+
+
+def _error_from_cdf_python(cdf, failure_prob, all_quantiles=False):
+    """Estimates error of approx_cdf aggregator, using Hoeffding's inequality.
+
+    Parameters
+    ----------
+    cdf : :obj:`dict`
+        Result of :func:`.approx_cdf` aggregator, evaluated to a python dict
+    failure_prob: :obj:`float`
+        Upper bound on probability of true error being greater than estimated error.
+    all_quantiles: :obj:`bool`
+        If ``True``, with probability 1 - `failure_prob`, error estimate applies
+        to all quantiles simultaneously.
+
+    Returns
+    -------
+    :obj:`float`
+        Upper bound on error of quantile estimates.
+    """
+    import math
+
+    s = 0
+    for i in builtins.range(builtins.len(cdf._compaction_counts)):
+        s += cdf._compaction_counts[i] << (2 * i)
+    s = s / (cdf.ranks[-1] ** 2)
+
+    def update_grid_size(p):
+        return 4 * math.sqrt(math.log(2 * p / failure_prob) / (2 * s))
+
+    def compute_grid_size(s):
+        p = 1 / failure_prob
+        for _ in builtins.range(5):
+            p = update_grid_size(p)
+        return p
+
+    def compute_single_error(s, failure_prob=failure_prob):
+        return math.sqrt(math.log(2 / failure_prob) * s / 2)
+
+    if s == 0:
+        # no compactions ergo no error
+        return 0
+    elif all_quantiles:
+        p = compute_grid_size(s)
+        return 1 / p + compute_single_error(s, failure_prob / p)
+    else:
+        return compute_single_error(s, failure_prob)
 
 
 @typecheck(t=hail_type)
@@ -306,7 +372,7 @@ def literal(x: Any, dtype: Optional[Union[HailType, str]] = None):
             assert isinstance(x, builtins.str)
             return construct_expr(ir.Str(x), tstr)
     else:
-        return construct_expr(ir.Literal(dtype, x), dtype)
+        return construct_expr(ir.EncodedLiteral(dtype, x), dtype)
 
 
 @deprecated(version="0.2.59", reason="Replaced by hl.if_else")

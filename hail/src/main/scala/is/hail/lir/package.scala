@@ -1,7 +1,7 @@
 package is.hail
 
-import is.hail.asm4s.{ArrayInfo, BooleanInfo, ClassInfo, DoubleInfo, FloatInfo, IntInfo, LongInfo, TypeInfo, UnitInfo}
-import is.hail.utils.FastIndexedSeq
+import is.hail.asm4s.{ArrayInfo, BooleanInfo, ClassInfo, DoubleInfo, FloatInfo, IntInfo, LongInfo, TypeInfo}
+import is.hail.utils.FastSeq
 import org.objectweb.asm.Opcodes._
 
 package object lir {
@@ -81,21 +81,21 @@ package object lir {
 
   def iincInsn(l: Local, i: Int): StmtX = new IincX(l, i)
 
-  def insn0(op: Int): ValueX = insn(op, null, FastIndexedSeq.empty)
+  def insn0(op: Int): ValueX = insn(op, null, FastSeq.empty)
 
-  def insn0(op: Int, _ti: TypeInfo[_]): ValueX = insn(op, _ti, FastIndexedSeq.empty)
+  def insn0(op: Int, _ti: TypeInfo[_]): ValueX = insn(op, _ti, FastSeq.empty)
 
   def insn1(op: Int): (ValueX) => ValueX = (c) =>
-    insn(op, null, FastIndexedSeq(c))
+    insn(op, null, FastSeq(c))
 
   def insn1(op: Int, _ti: TypeInfo[_], lineNumber: Int = 0): (ValueX) => ValueX = (c) =>
-    insn(op, _ti, FastIndexedSeq(c), lineNumber)
+    insn(op, _ti, FastSeq(c), lineNumber)
 
   def insn2(op: Int): (ValueX, ValueX) => ValueX = (c1, c2) =>
-    insn(op, null, FastIndexedSeq(c1, c2))
+    insn(op, null, FastSeq(c1, c2))
 
   def insn3(op: Int): (ValueX, ValueX, ValueX) => ValueX = (c1, c2, c3) =>
-    insn(op, null, FastIndexedSeq(c1, c2, c3))
+    insn(op, null, FastSeq(c1, c2, c3))
 
   def insn(op: Int, _ti: TypeInfo[_], args: IndexedSeq[ValueX], lineNumber: Int = 0): ValueX = {
     val x = new InsnX(op, _ti, lineNumber)
@@ -117,16 +117,16 @@ package object lir {
     x
   }
 
-  def stmtOp(op: Int, c1: ValueX, c2: ValueX, c3: ValueX): StmtX = stmtOp(op, FastIndexedSeq(c1, c2, c3))
+  def stmtOp(op: Int, c1: ValueX, c2: ValueX, c3: ValueX): StmtX = stmtOp(op, FastSeq(c1, c2, c3))
 
   def load(l: Local): ValueX = new LoadX(l)
 
-  def typeInsn1(op: Int, t: String): (ValueX) => ValueX = (c) => typeInsn(op, t, c)
+  def typeInsn1(op: Int, tti: TypeInfo[_]): (ValueX) => ValueX = (c) => typeInsn(op, tti, c)
 
-  def typeInsn(op: Int, t: String): ValueX = new TypeInsnX(op, t)
+  def typeInsn(op: Int, tti: TypeInfo[_]): ValueX = new TypeInsnX(op, tti)
 
-  def typeInsn(op: Int, t: String, v: ValueX): ValueX = {
-    val x = new TypeInsnX(op, t)
+  def typeInsn(op: Int, tti: TypeInfo[_], v: ValueX): ValueX = {
+    val x = new TypeInsnX(op, tti)
     setChildren(x, v)
     x
   }
@@ -259,9 +259,9 @@ package object lir {
     x
   }
 
-  def checkcast(iname: String): (ValueX) => ValueX = (c) => checkcast(iname, c)
+  def checkcast(tti: TypeInfo[_]): (ValueX) => ValueX = (c) => checkcast(tti, c)
 
-  def checkcast(iname: String, c: ValueX): ValueX = typeInsn(CHECKCAST, iname, c: ValueX)
+  def checkcast(tti: TypeInfo[_], c: ValueX): ValueX = typeInsn(CHECKCAST, tti, c: ValueX)
 
   def newArray(tti: TypeInfo[_]): (ValueX) => ValueX = (len) => newArray(len, tti)
 

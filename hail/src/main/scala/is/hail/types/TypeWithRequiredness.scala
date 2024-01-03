@@ -9,7 +9,7 @@ import is.hail.types.physical.stypes.EmitType
 import is.hail.types.physical.stypes.concrete.SIndexablePointer
 import is.hail.types.physical.stypes.interfaces.{SBaseStruct, SInterval, SNDArray, SStream}
 import is.hail.types.virtual._
-import is.hail.utils.{FastIndexedSeq, FastSeq, Interval, toMapFast}
+import is.hail.utils.{FastSeq, Interval, toMapFast}
 import org.apache.spark.sql.Row
 
 object BaseTypeWithRequiredness {
@@ -98,8 +98,11 @@ sealed abstract class BaseTypeWithRequiredness {
       throw new AssertionError(
         s"children lengths differed ${children.length} ${newChildren.length}. ${children} ${newChildren} ${this}")
     }
-    (children, newChildren).zipped.foreach { (r1, r2) =>
-      r1.unionFrom(r2)
+
+    // foreach on zipped seqs is very slow as the implementation
+    // doesn't know that the seqs are the same length.
+    for (i <- children.indices) {
+      children(i).unionFrom(newChildren(i))
     }
   }
 
@@ -178,7 +181,7 @@ object VirtualTypeWithReq {
   }
 
   def subset(vt: Type, rt: TypeWithRequiredness): VirtualTypeWithReq = {
-    val empty = FastIndexedSeq()
+    val empty = FastSeq()
     def subsetRT(vt: Type, rt: TypeWithRequiredness): TypeWithRequiredness = {
       val r = (vt, rt) match {
         case (_, t: RPrimitive) => t.copy(empty)
@@ -383,7 +386,7 @@ case class RNDArray(override val elementType: TypeWithRequiredness) extends RIte
 }
 
 case class RInterval(startType: TypeWithRequiredness, endType: TypeWithRequiredness) extends TypeWithRequiredness {
-  val children: IndexedSeq[TypeWithRequiredness] = FastIndexedSeq(startType, endType)
+  val children: IndexedSeq[TypeWithRequiredness] = FastSeq(startType, endType)
   def _unionLiteral(a: Annotation): Unit = {
     startType.unionLiteral(a.asInstanceOf[Interval].start)
     endType.unionLiteral(a.asInstanceOf[Interval].end)
@@ -500,12 +503,12 @@ object RTable {
     RTable(rowStruct.fields.map(f => f.name -> f.typ), globStruct.fields.map(f => f.name -> f.typ), key)
   }
 
-  def fromTableStage(ec: ExecuteContext, s: TableStage): RTable = {
+  def fromTableStage(ctx: ExecuteContext, s: TableStage): RTable = {
     def virtualTypeWithReq(ir: IR, inputs: Env[PType]): VirtualTypeWithReq = {
       import is.hail.expr.ir.Requiredness
-      val ns = ir.noSharing
+      val ns = ir.noSharing(ctx)
       val usesAndDefs = ComputeUsesAndDefs(ns, errorIfFreeVariables = false)
-      val req = Requiredness.apply(ns, usesAndDefs, ec, inputs)
+      val req = Requiredness.apply(ns, usesAndDefs, ctx, inputs)
       VirtualTypeWithReq(ir.typ, req.lookup(ns).asInstanceOf[TypeWithRequiredness])
     }
 
@@ -588,11 +591,11 @@ case class RTable(rowFields: IndexedSeq[(String, TypeWithRequiredness)], globalF
 }
 
 case class RMatrix(rowType: RStruct, entryType: RStruct, colType: RStruct, globalType: RStruct) {
-  val entriesRVType: RStruct = RStruct.fromNamesAndTypes(FastIndexedSeq(MatrixType.entriesIdentifier -> RIterable(entryType)))
+  val entriesRVType: RStruct = RStruct.fromNamesAndTypes(FastSeq(MatrixType.entriesIdentifier -> RIterable(entryType)))
 }
 
 case class RBlockMatrix(elementType: TypeWithRequiredness) extends BaseTypeWithRequiredness {
-  override def children: IndexedSeq[BaseTypeWithRequiredness] = FastIndexedSeq(elementType)
+  override def children: IndexedSeq[BaseTypeWithRequiredness] = FastSeq(elementType)
 
   override def copy(newChildren: IndexedSeq[BaseTypeWithRequiredness]): BaseTypeWithRequiredness = RBlockMatrix(newChildren(0).asInstanceOf[TypeWithRequiredness])
 

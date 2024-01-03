@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import pyspark.sql
 import pytest
-import random
 
 import hail as hl
 import hail.expr.aggregators as agg
@@ -14,7 +13,6 @@ import hail.ir as ir
 
 from hail import ExpressionException
 from ..helpers import *
-from test.hail.matrixtable.test_file_formats import create_all_values_datasets
 
 
 class Tests(unittest.TestCase):
@@ -2149,6 +2147,9 @@ def test_table_randomness_interval_join():
     t2 = hl.utils.range_table(4, 3)
     t2 = t2.key_by(k=hl.interval(t2.idx * 3, (t2.idx + 1) * 3))
     t = t1.annotate(x=t2[t1.idx].idx)
+    assert_contains_node(t, ir.TableIntervalJoin)
+    assert_unique_uids(t)
+    t = t1.annotate(x=t2.index(t1.idx, all_matches=True).idx)
     assert_contains_node(t, ir.TableIntervalJoin)
     assert_unique_uids(t)
 

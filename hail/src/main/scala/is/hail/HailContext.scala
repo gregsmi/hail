@@ -123,9 +123,6 @@ object HailContext {
 
     info(s"Running Hail version ${ theContext.version }")
 
-    // needs to be after `theContext` is set, since this creates broadcasts
-    backend.addDefaultReferences()
-
     theContext
   }
 
@@ -181,7 +178,7 @@ class HailContext private(
     maxLines: Int
   ): Map[String, Array[WithContext[String]]] = {
     val regexp = regex.r
-    SparkBackend.sparkContext("fileAndLineCounts").textFilesLines(fs.globAll(files))
+    SparkBackend.sparkContext("fileAndLineCounts").textFilesLines(fs.globAll(files).map(_.getPath))
       .filter(line => regexp.findFirstIn(line.value).isDefined)
       .take(maxLines)
       .groupBy(_.source.file)

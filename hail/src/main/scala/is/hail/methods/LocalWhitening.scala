@@ -1,13 +1,12 @@
 package is.hail.methods
 
 import is.hail.annotations.Region
-import is.hail.asm4s.{Value, _}
+import is.hail.asm4s._
 import is.hail.expr.ir.EmitCodeBuilder
 import is.hail.types.physical.stypes.interfaces.SNDArray.assertColMajor
-import is.hail.types.physical.stypes.interfaces._
-import is.hail.types.physical.stypes.interfaces.{ColonIndex => Colon}
+import is.hail.types.physical.stypes.interfaces.{ColonIndex => Colon, _}
 import is.hail.types.physical.{PCanonicalNDArray, PFloat64Required}
-import is.hail.utils.FastIndexedSeq
+import is.hail.utils.FastSeq
 
 class LocalWhitening(cb: EmitCodeBuilder, vecSize: SizeValue, _w: Value[Long], chunksize: Value[Long], _blocksize: Value[Long], region: Value[Region], normalizeAfterWhitening: Boolean) {
   val m = vecSize
@@ -23,18 +22,18 @@ class LocalWhitening(cb: EmitCodeBuilder, vecSize: SizeValue, _w: Value[Long], c
 
   val (tsize, worksize) = SNDArray.geqr_query(cb, m, chunksize, region)
 
-  val Q = cb.memoizeField(matType.constructUninitialized(FastIndexedSeq(m, w), cb, region), "LW_Q").asNDArray.coerceToShape(cb, m, w)
-  val R = cb.memoizeField(matType.constructUninitialized(FastIndexedSeq(w, w), cb, region), "LW_R").asNDArray.coerceToShape(cb, w, w)
-  val work1 = cb.memoizeField(matType.constructUninitialized(FastIndexedSeq(wpb, wpb), cb, region), "LW_work1").asNDArray.coerceToShape(cb, wpb, wpb)
-  val work2 = cb.memoizeField(matType.constructUninitialized(FastIndexedSeq(wpb, b), cb, region), "LW_work2").asNDArray.coerceToShape(cb, wpb, b)
-  val Rtemp = cb.memoizeField(matType.constructUninitialized(FastIndexedSeq(wpb, wpb), cb, region), "LW_Rtemp").asNDArray.coerceToShape(cb, wpb, wpb)
-  val Qtemp = cb.memoizeField(matType.constructUninitialized(FastIndexedSeq(m, b), cb, region), "LW_Qtemp").asNDArray.coerceToShape(cb, m, b)
-  val Qtemp2 = cb.memoizeField(matType.constructUninitialized(FastIndexedSeq(m, w), cb, region), "LW_Qtemp2").asNDArray.coerceToShape(cb, m, w)
+  val Q = cb.memoizeField(matType.constructUninitialized(FastSeq(m, w), cb, region), "LW_Q").asNDArray.coerceToShape(cb, m, w)
+  val R = cb.memoizeField(matType.constructUninitialized(FastSeq(w, w), cb, region), "LW_R").asNDArray.coerceToShape(cb, w, w)
+  val work1 = cb.memoizeField(matType.constructUninitialized(FastSeq(wpb, wpb), cb, region), "LW_work1").asNDArray.coerceToShape(cb, wpb, wpb)
+  val work2 = cb.memoizeField(matType.constructUninitialized(FastSeq(wpb, b), cb, region), "LW_work2").asNDArray.coerceToShape(cb, wpb, b)
+  val Rtemp = cb.memoizeField(matType.constructUninitialized(FastSeq(wpb, wpb), cb, region), "LW_Rtemp").asNDArray.coerceToShape(cb, wpb, wpb)
+  val Qtemp = cb.memoizeField(matType.constructUninitialized(FastSeq(m, b), cb, region), "LW_Qtemp").asNDArray.coerceToShape(cb, m, b)
+  val Qtemp2 = cb.memoizeField(matType.constructUninitialized(FastSeq(m, w), cb, region), "LW_Qtemp2").asNDArray.coerceToShape(cb, m, w)
   val blocksize = cb.memoizeField(_blocksize.min(w))
   val work3len = SizeValueDyn(cb.memoize(worksize.max(blocksize * m.max(wpb))))
-  val work3: SNDArrayValue = cb.memoizeField(vecType.constructUninitialized(FastIndexedSeq(work3len), cb, region), "LW_work3").asNDArray
+  val work3: SNDArrayValue = cb.memoizeField(vecType.constructUninitialized(FastSeq(work3len), cb, region), "LW_work3").asNDArray
   val Tlen = SizeValueDyn(cb.memoizeField(tsize.max(blocksize*wpb)))
-  val T: SNDArrayValue = cb.memoizeField(vecType.constructUninitialized(FastIndexedSeq(Tlen), cb, region), "LW_T").asNDArray
+  val T: SNDArrayValue = cb.memoizeField(vecType.constructUninitialized(FastSeq(Tlen), cb, region), "LW_T").asNDArray
 
   def reset(cb: EmitCodeBuilder): Unit = {
     cb.assign(curSize, 0L)
@@ -56,22 +55,22 @@ class LocalWhitening(cb: EmitCodeBuilder, vecSize: SizeValue, _w: Value[Long], c
     val n = Q2.shapes(1)
     val wpn = R.shapes(0)
 
-    cb.ifx(wpn.cne(w + n), cb._fatal("whitenBase: bad dimensions"))
+    cb.if_(wpn.cne(w + n), cb._fatal("whitenBase: bad dimensions"))
 
-    Q2.assertHasShape(cb, FastIndexedSeq(m, n), "")
-    Qout.assertHasShape(cb, FastIndexedSeq(m, w), "")
+    Q2.assertHasShape(cb, FastSeq(m, n), "")
+    Qout.assertHasShape(cb, FastSeq(m, w), "")
     assert(R.hasShapeStatic(wpn, wpn))
-    W.assertHasShape(cb, FastIndexedSeq(m, n), "")
-    work1.assertHasShape(cb, FastIndexedSeq(wpn, wpn), "")
-    work2.assertHasShape(cb, FastIndexedSeq(wpn, n), "")
+    W.assertHasShape(cb, FastSeq(m, n), "")
+    work1.assertHasShape(cb, FastSeq(wpn, wpn), "")
+    work2.assertHasShape(cb, FastSeq(wpn, n), "")
 
     val i = cb.mb.newLocal[Long]("whiten_base_i")
 
     // set work1 to I
     work1.setToZero(cb)
-    cb.forLoop(cb.assign(i, 0L), i.toL < w + n, cb.assign(i, i+1), work1.setElement(FastIndexedSeq(i, i), primitive(1.0), cb))
+    cb.for_(cb.assign(i, 0L), i.toL < w + n, cb.assign(i, i+1), work1.setElement(FastSeq(i, i), primitive(1.0), cb))
 
-    cb.forLoop(cb.assign(i, 0L), i < n, cb.assign(i, i+1), {
+    cb.for_(cb.assign(i, 0L), i < n, cb.assign(i, i+1), {
       // Loop invariant:
       // * ([Q1 Q2] work1[:, i:w+n]) R[i:w+n, i:w+n] = [A1 A2][i:w+n] is qr fact
       // * ([Q1 Q2] work2[:, 0:i]) is locally whitened A2[:, 0:i]
@@ -82,7 +81,7 @@ class LocalWhitening(cb: EmitCodeBuilder, vecSize: SizeValue, _w: Value[Long], c
       val w2col = work2.slice(cb, Colon, i)
       SNDArray.copyVector(cb, w1col, w2col)
       if (!normalizeAfterWhitening) {
-        SNDArray.scale(cb, R.loadElement(FastIndexedSeq(wpi, wpi), cb), w2col)
+        SNDArray.scale(cb, R.loadElement(FastSeq(wpi, wpi), cb), w2col)
       }
 
       // work3 > blocksize * (w+n - i+1) < blocksize * (w+n)
@@ -110,11 +109,11 @@ class LocalWhitening(cb: EmitCodeBuilder, vecSize: SizeValue, _w: Value[Long], c
   ): Unit = {
     val Seq(m, w) = Q.shapes
     val Seq(t) = T.shapes
-    cb.ifx(R.shapes(0).cne(w), cb._fatal("qr_pivot: R nrows != w"))
-    cb.ifx(R.shapes(1).cne(w), cb._fatal("qr_pivot: R ncols != w"))
-    cb.ifx(m <= w, cb._fatal("qr_pivot: m <= w, m=", m.toS, ", w=", w.toS))
-    cb.ifx(p0 < 0 || p0 >= p1 || p1 > w, cb._fatal("qr_pivot: bad p0, p1"))
-    cb.ifx(t < blocksize * p0.max((p1-p0).max(w-p1)), cb._fatal("qr_pivot: T too small"))
+    cb.if_(R.shapes(0).cne(w), cb._fatal("qr_pivot: R nrows != w"))
+    cb.if_(R.shapes(1).cne(w), cb._fatal("qr_pivot: R ncols != w"))
+    cb.if_(m <= w, cb._fatal("qr_pivot: m <= w, m=", m.toS, ", w=", w.toS))
+    cb.if_(p0 < 0 || p0 >= p1 || p1 > w, cb._fatal("qr_pivot: bad p0, p1"))
+    cb.if_(t < blocksize * p0.max((p1-p0).max(w-p1)), cb._fatal("qr_pivot: T too small"))
 
     val r0 = (null, p0)
     val r1 = (p0, p1)
@@ -127,18 +126,18 @@ class LocalWhitening(cb: EmitCodeBuilder, vecSize: SizeValue, _w: Value[Long], c
 
     // Set lower trapezoid of R[r12, r1] to zero
     val j = cb.mb.newLocal[Long]("j")
-    cb.forLoop(cb.assign(j, p0), j < p1, cb.assign(j, j+1), {
+    cb.for_(cb.assign(j, p0), j < p1, cb.assign(j, j+1), {
       R.slice(cb, (j+1, null), j).setToZero(cb)
     })
 
     R.slice(cb, r0, r1).setToZero(cb)
 
-    cb.ifx(p1 < w, {
+    cb.if_(p1 < w, {
       SNDArray.tpqrt(R.slice(cb, r2, r2), R.slice(cb, r1, r2), T, work3, b2, cb)
       SNDArray.tpmqrt("L", "T", R.slice(cb, r1, r2), T, R.slice(cb, r2, r01), R.slice(cb, r1, r01), work3, b2, cb)
       SNDArray.tpmqrt("R", "N", R.slice(cb, r1, r2), T, Q.slice(cb, Colon, r2), Q.slice(cb, Colon, r1), work3, b2, cb)
     })
-    cb.ifx(p0 > 0, {
+    cb.if_(p0 > 0, {
       SNDArray.tpqrt(R.slice(cb, r0, r0), R.slice(cb, r1, r0), T, work3, b0, cb)
       SNDArray.tpmqrt("L", "T", R.slice(cb, r1, r0), T, R.slice(cb, r0, r1), R.slice(cb, r1, r1), work3, b0, cb)
       SNDArray.tpmqrt("R", "N", R.slice(cb, r1, r0), T, Q.slice(cb, Colon, r0), Q.slice(cb, Colon, r1), work3, b0, cb)
@@ -163,16 +162,16 @@ class LocalWhitening(cb: EmitCodeBuilder, vecSize: SizeValue, _w: Value[Long], c
     val n = A.shapes(1)
     val wpn = work1.shapes(0)
 
-    cb.ifx(wpn.cne(w + n), cb._fatal("whitenNonrecur: bad dimensions"))
+    cb.if_(wpn.cne(w + n), cb._fatal("whitenNonrecur: bad dimensions"))
 
     assert(Q.hasShapeStatic(m, w))
-    R.assertHasShape(cb, FastIndexedSeq(w, w), "")
+    R.assertHasShape(cb, FastSeq(w, w), "")
     assert(A.hasShapeStatic(m, n))
-    Qtemp.assertHasShape(cb, FastIndexedSeq(m, n), "")
-    Qtemp2.assertHasShape(cb, FastIndexedSeq(m, w), "")
-    Rtemp.assertHasShape(cb, FastIndexedSeq(wpn, wpn), "")
-    work1.assertHasShape(cb, FastIndexedSeq(wpn, wpn), "")
-    work2.assertHasShape(cb, FastIndexedSeq(wpn, n), "")
+    Qtemp.assertHasShape(cb, FastSeq(m, n), "")
+    Qtemp2.assertHasShape(cb, FastSeq(m, w), "")
+    Rtemp.assertHasShape(cb, FastSeq(wpn, wpn), "")
+    work1.assertHasShape(cb, FastSeq(wpn, wpn), "")
+    work2.assertHasShape(cb, FastSeq(wpn, n), "")
 
     val r0 = (null, w)
     val r1 = (w, null)
@@ -220,7 +219,7 @@ class LocalWhitening(cb: EmitCodeBuilder, vecSize: SizeValue, _w: Value[Long], c
     val b = A.shapes(1)
     val bb = Rtemp.shapes(0)
 
-    cb.ifx((b*2).cne(bb), cb._fatal("whitenStep: invalid dimensions"))
+    cb.if_((b*2).cne(bb), cb._fatal("whitenStep: invalid dimensions"))
 
     assert(Q.hasShapeStatic(m, w))
     assert(R.hasShapeStatic(w, w))
@@ -265,9 +264,9 @@ class LocalWhitening(cb: EmitCodeBuilder, vecSize: SizeValue, _w: Value[Long], c
     val b = _A.shapes(1)
 
     val A = _A.coerceToShape(cb, m, b)
-    cb.ifx(b > chunksize, cb._fatal("whitenBlock: A too large, found ", b.toS, ", expected ", chunksize.toS))
+    cb.if_(b > chunksize, cb._fatal("whitenBlock: A too large, found ", b.toS, ", expected ", chunksize.toS))
 
-    cb.ifx(curSize < w, {
+    cb.if_(curSize < w, {
       // Orthogonalize against existing Q
       val Rslice = R.slice(cb, (null, curSize), (curSize, curSize + b))
       val Qslice = Q.slice(cb, Colon, (null, curSize))
@@ -283,15 +282,15 @@ class LocalWhitening(cb: EmitCodeBuilder, vecSize: SizeValue, _w: Value[Long], c
 
       // Copy whitened A back to A
       val j = cb.newLocal[Long]("j")
-      cb.forLoop(cb.assign(j, 0L), j < b, cb.assign(j, j+1), {
+      cb.for_(cb.assign(j, 0L), j < b, cb.assign(j, j+1), {
         val Acol = A.slice(cb, Colon, j)
         SNDArray.copyVector(cb, Qslice2.slice(cb, Colon, j), Acol)
-        SNDArray.scale(cb, Rslice2.loadElement(FastIndexedSeq(j, j), cb), Acol)
+        SNDArray.scale(cb, Rslice2.loadElement(FastSeq(j, j), cb), Acol)
       })
 
       cb.assign(curSize, curSize + b)
     }, {
-      cb.ifx(curSize.cne(w), cb._fatal("whitenBlock: initial blocks didn't evenly divide window size"))
+      cb.if_(curSize.cne(w), cb._fatal("whitenBlock: initial blocks didn't evenly divide window size"))
 
       val bb = SizeValueDyn(cb.memoize(b*2))
       whitenBlockLargeWindow(cb,
@@ -304,8 +303,8 @@ class LocalWhitening(cb: EmitCodeBuilder, vecSize: SizeValue, _w: Value[Long], c
         cb.memoize(blocksize.min(b)))
 
       cb.assign(pivot, pivot + b)
-      cb.ifx(pivot >= w, {
-        cb.ifx(pivot.cne(w), cb._fatal("whitenBlock, blocks didn't evenly divide window size"))
+      cb.if_(pivot >= w, {
+        cb.if_(pivot.cne(w), cb._fatal("whitenBlock, blocks didn't evenly divide window size"))
         cb.assign(pivot, 0L)
       })
     })
@@ -315,8 +314,8 @@ class LocalWhitening(cb: EmitCodeBuilder, vecSize: SizeValue, _w: Value[Long], c
     val b = _A.shapes(1)
 
     val A = _A.coerceToShape(cb, m, b)
-    cb.ifx(b > w, cb._fatal("initializeWindow: A too large"))
-    cb.ifx(curSize.cne(0), cb._fatal("initializeWindow: can only be called on empty state"))
+    cb.if_(b > w, cb._fatal("initializeWindow: A too large"))
+    cb.if_(curSize.cne(0), cb._fatal("initializeWindow: can only be called on empty state"))
 
     val Rslice = R.slice(cb, (null, b), (null, b))
     val Qslice = Q.slice(cb, Colon, (null, b))

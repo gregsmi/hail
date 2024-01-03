@@ -7,7 +7,7 @@ bash add-logging-agent-repo.sh
 
 
 # The nvidia toolkit must be installed in this startup script to be able to configure docker with the command nvidia-ctk runtime configure --runtime=docker. This command cannot be run from Dockerfile.worker
-# The toolkit also has to be installed in Dockerfile.worker since to execute the nvidia hook, the toolkit needs to be installed in the container from which crun is invoked. 
+# The toolkit also has to be installed in Dockerfile.worker since to execute the nvidia hook, the toolkit needs to be installed in the container from which crun is invoked.
 
 # Get the latest GPG key as it might not always be up to date
 # https://cloud.google.com/compute/docs/troubleshooting/known-issues#keyexpired
@@ -65,12 +65,14 @@ chmod +x NVIDIA-Linux-x86_64-530.30.02.run
 apt-get --yes install nvidia-container-toolkit
 nvidia-ctk runtime configure --runtime=docker
 
+curl -sSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh
+bash add-google-cloud-ops-agent-repo.sh --also-install --version=2.*.*
+
 # avoid "unable to get current user home directory: os/user lookup failed"
 export HOME=/root
 
 docker-credential-gcr configure-docker --include-artifact-registry
 docker pull {{ global.docker_root_image }}
-
 
 # add docker daemon debug logging
 jq '.debug = true' /etc/docker/daemon.json > daemon.json.tmp

@@ -24,20 +24,29 @@ object Children {
     case NA(typ) => none
     case IsNA(value) =>
       Array(value)
-    case Coalesce(values) => values.toFastIndexedSeq
-    case Consume(value) => FastIndexedSeq(value)
+    case Coalesce(values) => values.toFastSeq
+    case Consume(value) => FastSeq(value)
     case If(cond, cnsq, altr) =>
       Array(cond, cnsq, altr)
-    case Let(name, value, body) =>
-      Array(value, body)
+    case s@Switch(x, default, cases) =>
+      val children = Array.ofDim[BaseIR](s.size)
+      children(0) = x
+      children(1) = default
+      for (i <- cases.indices) children(2 + i) = cases(i)
+      children
+    case Let(bindings, body) =>
+      val children = Array.ofDim[BaseIR](x.size)
+      for (i <- bindings.indices) children(i) = bindings(i)._2
+      children(bindings.size) = body
+      children
     case RelationalLet(name, value, body) =>
       Array(value, body)
     case AggLet(name, value, body, _) =>
       Array(value, body)
-    case TailLoop(_, args, body) =>
-      args.map(_._2).toFastIndexedSeq :+ body
+    case TailLoop(_, args, _, body) =>
+      args.map(_._2).toFastSeq :+ body
     case Recur(_, args, _) =>
-      args.toFastIndexedSeq
+      args.toFastSeq
     case Ref(name, typ) =>
       none
     case RelationalRef(_, _) =>
@@ -49,9 +58,9 @@ object Children {
     case ApplyComparisonOp(op, l, r) =>
       Array(l, r)
     case MakeArray(args, typ) =>
-      args.toFastIndexedSeq
+      args.toFastSeq
     case MakeStream(args, _, _) =>
-      args.toFastIndexedSeq
+      args.toFastSeq
     case ArrayRef(a, i, _) =>
       Array(a, i)
     case ArraySlice(a, start, stop, step, _) =>
@@ -186,11 +195,11 @@ object Children {
       Array(key, aggIR)
     case AggArrayPerElement(a, _, _, aggBody, knownLength, _) => Array(a, aggBody) ++ knownLength.toArray[IR]
     case MakeStruct(fields) =>
-      fields.map(_._2).toFastIndexedSeq
+      fields.map(_._2).toFastSeq
     case SelectFields(old, fields) =>
       Array(old)
     case InsertFields(old, fields, _) =>
-      (old +: fields.map(_._2)).toFastIndexedSeq
+      (old +: fields.map(_._2)).toFastSeq
     case InitOp(_, args, _) => args
     case SeqOp(_, args, _) => args
     case _: ResultOp => none
@@ -211,7 +220,7 @@ object Children {
     case GetField(o, name) =>
       Array(o)
     case MakeTuple(fields) =>
-      fields.map(_._2).toFastIndexedSeq
+      fields.map(_._2).toFastSeq
     case GetTupleElement(o, idx) =>
       Array(o)
     case In(i, typ) =>
@@ -221,14 +230,14 @@ object Children {
     case Trap(child) => Array(child)
     case ConsoleLog(message, result) =>
       Array(message, result)
-    case ApplyIR(_, _, args, _) =>
-      args.toFastIndexedSeq
+    case ApplyIR(_, _, args, _, _) =>
+      args.toFastSeq
     case Apply(_, _, args, _, _) =>
-      args.toFastIndexedSeq
+      args.toFastSeq
     case ApplySeeded(_, args, rngState, _, _) =>
-      args.toFastIndexedSeq :+ rngState
+      args.toFastSeq :+ rngState
     case ApplySpecial(_, _, args, _, _) =>
-      args.toFastIndexedSeq
+      args.toFastSeq
     // from MatrixIR
     case MatrixWrite(child, _) => Array(child)
     case MatrixMultiWrite(children, _) => children

@@ -3,15 +3,12 @@ package is.hail.types.physical.stypes.concrete
 import is.hail.annotations.Region
 import is.hail.asm4s._
 import is.hail.expr.ir.{EmitCodeBuilder, Threefry, ThreefryRandomEngine}
-import is.hail.types.{RPrimitive, TypeWithRequiredness}
-import is.hail.types.physical.{PType, StoredSTypePType}
 import is.hail.types.physical.stypes.primitives.SInt64Value
 import is.hail.types.physical.stypes.{SSettable, SType, SValue}
+import is.hail.types.physical.{PType, StoredSTypePType}
 import is.hail.types.virtual.{TRNGState, Type}
-import is.hail.utils.{Bitstring, FastIndexedSeq, toRichIterable}
-
-import scala.collection.mutable
-import scala.collection.mutable
+import is.hail.types.{RPrimitive, TypeWithRequiredness}
+import is.hail.utils.FastSeq
 
 final case class SRNGStateStaticInfo(numWordsInLastBlock: Int, hasStaticSplit: Boolean, numDynBlocks: Int) {
   assert(numWordsInLastBlock <= 4 && numWordsInLastBlock >= 0)
@@ -109,13 +106,13 @@ class SCanonicalRNGStateValue(
   override def valueTuple: IndexedSeq[Value[_]] =
     runningSum ++
       lastDynBlock ++
-      FastIndexedSeq(numWordsInLastBlock, hasStaticSplit, numDynBlocks)
+      FastSeq(numWordsInLastBlock, hasStaticSplit, numDynBlocks)
 
   override def sizeToStoreInBytes(cb: EmitCodeBuilder): SInt64Value =
     new SInt64Value(4*8 + 4*8 + 4 + 4 + 4)
 
   def splitStatic(cb: EmitCodeBuilder, idx: Long): SCanonicalRNGStateValue = {
-    cb.ifx(hasStaticSplit, cb._fatal("RNGState received two static splits"))
+    cb.if_(hasStaticSplit, cb._fatal("RNGState received two static splits"))
     val x = Array.ofDim[Long](4)
     x(0) = cb.emb.ctx.rngNonce
     x(1) = idx
@@ -132,15 +129,11 @@ class SCanonicalRNGStateValue(
     val newNumWordsInLastBlock = cb.newLocal[Int](s"splitDyn_numWords", numWordsInLastBlock)
     val newNumDynBlocks = cb.newLocal[Int](s"splitDyn_numBlocks", numDynBlocks)
 
-    cb.ifx(numWordsInLastBlock < 4, {
-      cb += Code.switch(
-        numWordsInLastBlock,
-        Code._fatal[Unit]("invalid numWordsInLastBlock"),
-        FastIndexedSeq(
-          newLastDynBlock(0) := idx,
-          newLastDynBlock(1) := idx,
-          newLastDynBlock(2) := idx,
-          newLastDynBlock(3) := idx))
+    cb.if_(numWordsInLastBlock < 4, {
+      cb.switch(numWordsInLastBlock,
+        cb._fatal("invalid numWordsInLastBlock: ", numWordsInLastBlock.toS),
+        for {i <- 0 until 4} yield () => cb.assign(newLastDynBlock(i), idx)
+      )
       cb.assign(newNumWordsInLastBlock, newNumWordsInLastBlock + 1)
     }, {
       val key = Threefry.defaultKey
@@ -156,38 +149,40 @@ class SCanonicalRNGStateValue(
   }
 
   def rand(cb: EmitCodeBuilder): IndexedSeq[Value[Long]] = {
-    cb.ifx(!hasStaticSplit, cb._fatal("RNGState never received static split"))
+    cb.if_(!hasStaticSplit, cb._fatal("RNGState never received static split"))
     val x = Array.tabulate[Settable[Long]](4)(i => cb.newLocal[Long](s"rand_x$i", runningSum(i)))
     val key = Threefry.defaultKey
-    val finalTweak = cb.ifx(numWordsInLastBlock.ceq(4), Threefry.finalBlockNoPadTweak, Threefry.finalBlockPaddedTweak)
+    val finalTweak = cb.memoize((numWordsInLastBlock ceq 4).mux(Threefry.finalBlockNoPadTweak, Threefry.finalBlockPaddedTweak))
     for (i <- 0 until 4) cb.assign(x(i), x(i) ^ lastDynBlock(i))
-    cb += Code.switch(
-      numWordsInLastBlock,
-      Code._fatal[Unit]("invalid numWordsInLastBlock"),
-      FastIndexedSeq(
-        x(0) := x(0) ^ 1L,
-        x(1) := x(1) ^ 1L,
-        x(2) := x(2) ^ 1L,
-        x(3) := x(3) ^ 1L,
-        Code._empty))
+    cb.switch(numWordsInLastBlock,
+      cb._fatal("invalid numWordsInLastBlock: ", numWordsInLastBlock.toS),
+      FastSeq(
+        () => cb += (x(0) := x(0) ^ 1L),
+        () => cb += (x(1) := x(1) ^ 1L),
+        () => cb += (x(2) := x(2) ^ 1L),
+        () => cb += (x(3) := x(3) ^ 1L),
+        () => {}
+      )
+    )
     Threefry.encrypt(cb, key, Array(finalTweak, const(0L)), x)
     x
   }
 
   def copyIntoEngine(cb: EmitCodeBuilder, tf: Value[ThreefryRandomEngine]): Unit = {
-    cb.ifx(!hasStaticSplit, cb._fatal("RNGState never received static split"))
+    cb.if_(!hasStaticSplit, cb._fatal("RNGState never received static split"))
     val x = Array.tabulate[Settable[Long]](4)(i => cb.newLocal[Long](s"cie_x$i", runningSum(i)))
-    val finalTweak = cb.ifx(numWordsInLastBlock.ceq(4), Threefry.finalBlockNoPadTweak, Threefry.finalBlockPaddedTweak)
+    val finalTweak = (numWordsInLastBlock ceq 4).mux(Threefry.finalBlockNoPadTweak, Threefry.finalBlockPaddedTweak)
     for (i <- 0 until 4) cb.assign(x(i), x(i) ^ lastDynBlock(i))
-    cb += Code.switch(
-      numWordsInLastBlock,
-      Code._fatal[Unit]("invalid numWordsInLastBlock"),
-      FastIndexedSeq(
-        x(0) := x(0) ^ 1L,
-        x(1) := x(1) ^ 1L,
-        x(2) := x(2) ^ 1L,
-        x(3) := x(3) ^ 1L,
-        Code._empty))
+    cb.switch(numWordsInLastBlock,
+      cb._fatal("invalid numWordsInLastBlock: ", numWordsInLastBlock.toS),
+      FastSeq(
+        () => cb += (x(0) := x(0) ^ 1L),
+        () => cb += (x(1) := x(1) ^ 1L),
+        () => cb += (x(2) := x(2) ^ 1L),
+        () => cb += (x(3) := x(3) ^ 1L),
+        () => {}
+      )
+    )
     cb += tf.invoke[Long, Long, Long, Long, Long, Unit]("resetState", x(0), x(1), x(2), x(3), finalTweak)
   }
 }
@@ -213,7 +208,7 @@ class SCanonicalRNGStateSettable(
   override def settableTuple(): IndexedSeq[Settable[_]] =
     runningSum ++
       lastDynBlock ++
-      FastIndexedSeq(numWordsInLastBlock, hasStaticSplit, numDynBlocks)
+      FastSeq(numWordsInLastBlock, hasStaticSplit, numDynBlocks)
 }
 
 object SRNGStateStaticSizeValue {

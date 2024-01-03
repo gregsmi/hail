@@ -2,4 +2,3 @@ ci
 batch
 batch-driver
 auth
-memory

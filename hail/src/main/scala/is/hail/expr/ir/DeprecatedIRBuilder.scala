@@ -2,7 +2,7 @@ package is.hail.expr.ir
 
 import is.hail.types._
 import is.hail.types.virtual._
-import is.hail.utils.FastIndexedSeq
+import is.hail.utils.FastSeq
 
 import scala.language.{dynamics, implicitConversions}
 
@@ -64,9 +64,9 @@ object DeprecatedIRBuilder {
     MakeTuple.ordered(values.toArray.map(_ (env)))
 
   def applyAggOp(
-    op: AggOp,
-    initOpArgs: IndexedSeq[IRProxy] = FastIndexedSeq(),
-    seqOpArgs: IndexedSeq[IRProxy] = FastIndexedSeq()): IRProxy = (env: E) => {
+                  op: AggOp,
+                  initOpArgs: IndexedSeq[IRProxy] = FastSeq(),
+                  seqOpArgs: IndexedSeq[IRProxy] = FastSeq()): IRProxy = (env: E) => {
 
     val i = initOpArgs.map(x => x(env))
     val s = seqOpArgs.map(x => x(env))
@@ -94,7 +94,7 @@ object DeprecatedIRBuilder {
     def mapRows(newRow: IRProxy): TableIR =
       TableMapRows(tir, newRow(env))
 
-    def explode(sym: Symbol): TableIR = TableExplode(tir, FastIndexedSeq(sym.name))
+    def explode(sym: Symbol): TableIR = TableExplode(tir, FastSeq(sym.name))
 
     def aggregateByKey(aggIR: IRProxy): TableIR = TableAggregateByKey(tir, aggIR(env))
 
@@ -118,7 +118,7 @@ object DeprecatedIRBuilder {
       val uid = genUID()
       val keyFields = tir.typ.key
       val valueFields = tir.typ.valueType.fieldNames
-      keyBy(FastIndexedSeq())
+      keyBy(FastSeq())
         .collect()
         .apply('rows)
         .map(Symbol(uid) ~> makeTuple(Symbol(uid).selectFields(keyFields: _*), Symbol(uid).selectFields(valueFields: _*)))
@@ -163,9 +163,9 @@ object DeprecatedIRBuilder {
 
     def toD: IRProxy = (env: E) => Cast(ir(env), TFloat64)
 
-    def unary_-(): IRProxy = (env: E) => ApplyUnaryPrimOp(Negate(), ir(env))
+    def unary_-(): IRProxy = (env: E) => ApplyUnaryPrimOp(Negate, ir(env))
 
-    def unary_!(): IRProxy = (env: E) => ApplyUnaryPrimOp(Bang(), ir(env))
+    def unary_!(): IRProxy = (env: E) => ApplyUnaryPrimOp(Bang, ir(env))
 
     def ceq(other: IRProxy): IRProxy = (env: E) => {
       val left = ir(env)
@@ -234,13 +234,13 @@ object DeprecatedIRBuilder {
     def insertStruct(other: IRProxy, ordering: Option[IndexedSeq[String]] = None): IRProxy = (env: E) => {
       val right = other(env)
       val sym = genUID()
-      Let(
-        sym,
-        right,
+      Let(FastSeq(sym -> right),
         InsertFields(
           ir(env),
           right.typ.asInstanceOf[TStruct].fieldNames.map(f => f -> GetField(Ref(sym, right.typ), f)),
-          ordering))
+          ordering
+        )
+      )
     }
 
     def len: IRProxy = (env: E) => ArrayLen(ir(env))
@@ -250,7 +250,7 @@ object DeprecatedIRBuilder {
     def orElse(alt: IRProxy): IRProxy = { env: E =>
       val uid = genUID()
       val eir = ir(env)
-      Let(uid, eir, If(IsNA(Ref(uid, eir.typ)), alt(env), Ref(uid, eir.typ)))
+      Let(FastSeq(uid -> eir), If(IsNA(Ref(uid, eir.typ)), alt(env), Ref(uid, eir.typ)))
     }
 
     def filter(pred: LambdaProxy): IRProxy = (env: E) => {
@@ -344,7 +344,7 @@ object DeprecatedIRBuilder {
           val name = sym.name
           val value = binding(env)
           scope match {
-            case Scope.EVAL => Let(name, value, bind(rest, body, env.bind(name -> value.typ), scope))
+            case Scope.EVAL => Let(FastSeq(name -> value), bind(rest, body, env.bind(name -> value.typ), scope))
             case Scope.AGG => AggLet(name, value, bind(rest, body, env.bind(name -> value.typ), scope), isScan = false)
             case Scope.SCAN => AggLet(name, value, bind(rest, body, env.bind(name -> value.typ), scope), isScan = true)
           }

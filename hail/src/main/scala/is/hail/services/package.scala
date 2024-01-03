@@ -20,7 +20,7 @@ import com.google.api.client.googleapis.json.GoogleJsonResponseException
 import com.google.api.client.http.HttpResponseException
 
 package object services {
-  lazy val log: Logger = LogManager.getLogger("is.hail.services")
+  private lazy val log: Logger = LogManager.getLogger("is.hail.services")
 
   val RETRYABLE_HTTP_STATUS_CODES: Set[Int] = {
     val s = Set(408, 429, 500, 502, 503, 504)
@@ -42,10 +42,10 @@ package object services {
     // Based on AWS' recommendations:
     // - https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
     // - https://github.com/aws/aws-sdk-java/blob/master/aws-java-sdk-core/src/main/java/com/amazonaws/retry/PredefinedBackoffStrategies.java
-    val multiplier = 1 << math.min(tries, LOG_2_MAX_MULTIPLIER)
-    val ceilingForDelayMs = baseDelayMs * multiplier
+    val multiplier = 1L << math.min(tries, LOG_2_MAX_MULTIPLIER)
+    val ceilingForDelayMs = math.min(baseDelayMs * multiplier, maxDelayMs).toInt
     val proposedDelayMs = ceilingForDelayMs / 2 + Random.nextInt(ceilingForDelayMs / 2 + 1)
-    return math.min(proposedDelayMs, maxDelayMs)
+    return proposedDelayMs
   }
 
   def sleepBeforTry(
@@ -82,6 +82,10 @@ package object services {
 	//   at sun.nio.ch.IOUtil.readIntoNativeBuffer(IOUtil.java:223)~[?:1.8.0_362]
 	//   at sun.nio.ch.IOUtil.read(IOUtil.java:192) ~[?:1.8.0_362]
 	//   at sun.nio.ch.SocketChannelImpl.read(SocketChannelImpl.java:379) ~[?:1.8.0_362]
+        true
+      case e: SSLException
+          if e.getMessage != null && e.getMessage.contains("Tag mismatch!") =>
+        // https://github.com/googleapis/java-storage/issues/2337
         true
       case e =>
         val cause = e.getCause

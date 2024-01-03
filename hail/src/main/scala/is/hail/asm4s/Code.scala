@@ -1,15 +1,14 @@
 package is.hail.asm4s
 
-import java.io.PrintStream
-import java.lang.reflect
-
 import is.hail.expr.ir.EmitCodeBuilder
 import is.hail.lir
-import is.hail.lir.{LdcX, ValueX}
+import is.hail.lir.{Block, ControlX, ValueX}
 import is.hail.utils._
 import org.objectweb.asm.Opcodes._
 import org.objectweb.asm.Type
 
+import java.io.PrintStream
+import java.lang.reflect
 import scala.reflect.ClassTag
 
 abstract class Thrower[T] {
@@ -104,35 +103,35 @@ object Code {
   }
 
   def apply[T](c1: Code[Unit], c2: Code[T]): Code[T] =
-    sequence1(FastIndexedSeq(c1), c2)
+    sequence1(FastSeq(c1), c2)
 
   def apply[T](c1: Code[Unit], c2: Code[Unit], c3: Code[T]): Code[T] =
-    sequence1(FastIndexedSeq(c1, c2), c3)
+    sequence1(FastSeq(c1, c2), c3)
 
   def apply[T](c1: Code[Unit], c2: Code[Unit], c3: Code[Unit], c4: Code[T]): Code[T] =
-    sequence1(FastIndexedSeq(c1, c2, c3), c4)
+    sequence1(FastSeq(c1, c2, c3), c4)
 
   def apply[T](c1: Code[Unit], c2: Code[Unit], c3: Code[Unit], c4: Code[Unit], c5: Code[T]): Code[T] =
-    sequence1(FastIndexedSeq(c1, c2, c3, c4), c5)
+    sequence1(FastSeq(c1, c2, c3, c4), c5)
 
   def apply[T](c1: Code[Unit], c2: Code[Unit], c3: Code[Unit], c4: Code[Unit], c5: Code[Unit], c6: Code[T]): Code[T] =
-    sequence1(FastIndexedSeq(c1, c2, c3, c4, c5), c6)
+    sequence1(FastSeq(c1, c2, c3, c4, c5), c6)
 
   def apply[T](c1: Code[Unit], c2: Code[Unit], c3: Code[Unit], c4: Code[Unit], c5: Code[Unit], c6: Code[Unit], c7: Code[T]): Code[T] =
-    sequence1(FastIndexedSeq(c1, c2, c3, c4, c5, c6), c7)
+    sequence1(FastSeq(c1, c2, c3, c4, c5, c6), c7)
 
   def apply[T](c1: Code[Unit], c2: Code[Unit], c3: Code[Unit], c4: Code[Unit], c5: Code[Unit], c6: Code[Unit], c7: Code[Unit], c8: Code[T]): Code[T] =
-    sequence1(FastIndexedSeq(c1, c2, c3, c4, c5, c6, c7), c8)
+    sequence1(FastSeq(c1, c2, c3, c4, c5, c6, c7), c8)
 
   def apply[T](c1: Code[Unit], c2: Code[Unit], c3: Code[Unit], c4: Code[Unit], c5: Code[Unit], c6: Code[Unit], c7: Code[Unit], c8: Code[Unit], c9: Code[T]): Code[T] =
-    sequence1(FastIndexedSeq(c1, c2, c3, c4, c5, c6, c7, c8), c9)
+    sequence1(FastSeq(c1, c2, c3, c4, c5, c6, c7, c8), c9)
 
   def apply(cs: Seq[Code[Unit]]): Code[Unit] = {
     if (cs.isEmpty)
       Code(null: lir.ValueX)
     else {
       assert(cs.forall(_.v == null))
-      val fcs = cs.toFastIndexedSeq
+      val fcs = cs.toFastSeq
       sequence1(fcs.init, fcs.last)
     }
   }
@@ -217,27 +216,6 @@ object Code {
 
   def newArray[T](size: Code[Int])(implicit tti: TypeInfo[T]): Code[Array[T]] =
     Code(size, lir.newArray(tti))
-
-  def whileLoop(cond: Code[Boolean], body: Code[Unit]*): Code[Unit] = {
-    val L = CodeLabel()
-    Code(
-      L,
-      cond.mux(
-        Code(
-          Code(body.toFastIndexedSeq),
-          L.goto),
-        Code._empty))
-  }
-
-  def forLoop(init: Code[Unit], cond: Code[Boolean], increment: Code[Unit], body: Code[Unit]): Code[Unit] = {
-    Code(
-      init,
-      Code.whileLoop(cond,
-        body,
-        increment
-      )
-    )
-  }
 
   def invokeScalaObject[S](cls: Class[_], method: String, parameterTypes: Array[Class[_]], args: Array[Code[_]])(implicit sct: ClassTag[S]): Code[S] = {
     val m = Invokeable.lookupMethod(cls, method, parameterTypes)(sct)
@@ -456,14 +434,8 @@ object Code {
     )
   }
 
-  def _assert(c: Code[Boolean]): Code[Unit] =
-    c.mux(Code._empty, Code._throw[AssertionError, Unit](Code.newInstance[AssertionError]()))
-
-  def _assert(c: Code[Boolean], message: Code[String]): Code[Unit] =
-    c.mux(Code._empty, Code._throw[AssertionError, Unit](Code.newInstance[AssertionError, java.lang.Object](message)))
-
   def checkcast[T](v: Code[_])(implicit tti: TypeInfo[T]): Code[T] =
-    Code(v, lir.checkcast(tti.iname))
+    Code(v, lir.checkcast(tti))
 
   def boxBoolean(cb: Code[Boolean]): Code[java.lang.Boolean] = Code.newInstance[java.lang.Boolean, Boolean](cb)
 
@@ -539,18 +511,6 @@ object Code {
     newC
   }
 
-  def switch(c: Code[Int], dflt: Code[Unit], cases: IndexedSeq[Code[Unit]]): Code[Unit] = {
-    val L = new lir.Block()
-    c.end.append(lir.switch(c.v, dflt.start, cases.map(_.start)))
-    dflt.end.append(lir.goto(L))
-    cases.foreach(_.end.append(lir.goto(L)))
-    val newC = new VCode(c.start, L, null)
-    c.clear()
-    dflt.clear()
-    cases.foreach(_.clear())
-    newC
-  }
-
   def newLocal[T](name: String)(implicit tti: TypeInfo[T]): Settable[T] =
     new LocalRef[T](new lir.Local(null, name, tti))
 
@@ -567,6 +527,9 @@ object Code {
 
 trait Code[+T] {
   // val stack = Thread.currentThread().getStackTrace
+
+  def isOpenEnded: Boolean =
+    end == null || !end.last.isInstanceOf[ControlX]
 
   def start: lir.Block
 
@@ -789,7 +752,7 @@ class CodeBoolean(val lhs: Code[Boolean]) extends AnyVal {
             else
               Lfalse))
         case _ =>
-          assert(lhs.v.ti == BooleanInfo,lhs.v.ti)
+          assert(lhs.v.ti == BooleanInfo, lhs.v.ti)
           lhs.end.append(lir.ifx(IFNE, lhs.v, Ltrue, Lfalse))
       }
       val newC = new CCode(lhs.start, Ltrue, Lfalse)
@@ -802,52 +765,21 @@ class CodeBoolean(val lhs: Code[Boolean]) extends AnyVal {
     case _ => !lhs.toCCode
   }
 
-  def muxAny(cthen: Code[_], celse: Code[_]): Code[_] = {
-    mux[Any](coerce[Any](cthen), coerce[Any](celse))
+  def branch(csq: CodeLabel, alt: CodeLabel): Code[Unit] = {
+    val cond = toCCode
+    cond.Ltrue.append(lir.goto(csq.start))
+    cond.Lfalse.append(lir.goto(alt.start))
+    new VCode(cond.entry, new Block(), null)
   }
 
-  def mux[T](cthen: Code[T], celse: Code[T]): Code[T] = {
-    val cond = lhs.toCCode
-    val L = new lir.Block()
-    val newC = if (cthen.v == null) {
-      assert(celse.v == null)
-
-      cond.Ltrue.append(lir.goto(cthen.start))
-      cthen.end.append(lir.goto(L))
-      cond.Lfalse.append(lir.goto(celse.start))
-      celse.end.append(lir.goto(L))
-      new VCode(cond.entry, L, null)
-    } else {
-      assert(celse.v != null)
-      assert(cthen.v.ti.desc == celse.v.ti.desc, s"${ cthen.v.ti.desc } == ${ celse.v.ti.desc }")
-
-      val t = new lir.Local(null, "mux",
-        cthen.v.ti)
-
-      cond.Ltrue.append(lir.goto(cthen.start))
-      cthen.end.append(lir.store(t, cthen.v))
-      cthen.end.append(lir.goto(L))
-
-      cond.Lfalse.append(lir.goto(celse.start))
-      celse.end.append(lir.store(t, celse.v))
-      celse.end.append(lir.goto(L))
-
-      new VCode(cond.entry, L, lir.load(t))
+  def mux[T](csq: Code[T], alt: Code[T])(implicit ev: T =!= Unit): Code[T] = {
+    assert(alt.v != null)
+    assert(csq.v.ti.desc == alt.v.ti.desc, s"${csq.v.ti.desc} == ${alt.v.ti.desc}")
+    CodeBuilder.scopedCode(null) { cb =>
+      val t = Code.newLocal[T]("mux")(csq.v.ti.asInstanceOf[TypeInfo[T]])
+      cb.if_(lhs, cb.assign(t, csq), cb.assign(t, alt))
+      t
     }
-    cthen.clear()
-    celse.clear()
-    newC
-  }
-
-  def orEmpty(cthen: Code[Unit]): Code[Unit] = {
-    val cond = lhs.toCCode
-    val L = new lir.Block()
-    cond.Ltrue.append(lir.goto(cthen.start))
-    cthen.end.append(lir.goto(L))
-    cond.Lfalse.append(lir.goto(L))
-    val newC = new VCode(cond.entry, L, null)
-    cthen.clear()
-    newC
   }
 
   def &(rhs: Code[Boolean]): Code[Boolean] = Code(lhs, rhs, lir.insn2(IAND))
@@ -902,6 +834,13 @@ class CodeInt(val lhs: Code[Int]) extends AnyVal {
     val newC = new CCode(entry, Ltrue, Lfalse)
     lhs.clear()
     rhs.clear()
+    newC
+  }
+
+  def switch(default: CodeLabel, cases: IndexedSeq[CodeLabel]): Code[Unit] = {
+    lhs.end.append(lir.switch(lhs.v, default.start, cases.map(_.start)))
+    val newC = new VCode[Unit](lhs.start, new Block(), lhs.v)
+    lhs.clear()
     newC
   }
 
@@ -1106,6 +1045,9 @@ class CodeChar(val lhs: Code[Char]) extends AnyVal {
 }
 
 class CodeString(val lhs: Code[String]) extends AnyVal {
+  def +(rhs: Code[String]): Code[String] =
+    concat(rhs)
+
   def concat(other: Code[String]): Code[String] = lhs.invoke[String, String]("concat", other)
 
   def println(): Code[Unit] = Code.getStatic[System, PrintStream]("out").invoke[String, Unit]("println", lhs)
@@ -1118,7 +1060,7 @@ class CodeString(val lhs: Code[String]) extends AnyVal {
 class CodeArray[T](val lhs: Code[Array[T]])(implicit tti: TypeInfo[T]) {
   assert(lhs.ti.asInstanceOf[ArrayInfo[_]].tti == tti)
   def apply(i: Code[Int]): Code[T] = {
-    val f: (ValueX, ValueX) => ValueX = (v1: ValueX, v2: ValueX) => lir.insn(tti.aloadOp, tti, FastIndexedSeq(v1, v2))
+    val f: (ValueX, ValueX) => ValueX = (v1: ValueX, v2: ValueX) => lir.insn(tti.aloadOp, tti, FastSeq(v1, v2))
     Code(lhs, i, f)
   }
 
@@ -1279,7 +1221,7 @@ class Invokeable[T, S](tcls: Class[T],
       val t = new lir.Local(null, s"invoke_$name", sti)
       var r = lir.methodInsn(invokeOp, Type.getInternalName(tcls), name, descriptor, isInterface, sti, argvs)
       if (concreteReturnType != sct.runtimeClass)
-        r = lir.checkcast(Type.getInternalName(sct.runtimeClass), r)
+        r = lir.checkcast(sti, r)
       end.append(lir.store(t, r))
       new VCode(start, end, lir.load(t))
     }
@@ -1323,7 +1265,11 @@ class ThisLazyFieldRef[T: TypeInfo](cb: ClassBuilder[_], name: String, setup: Co
   private[this] val setm = cb.genMethod[Unit](s"setup_$name")
   setm.emit(Code(value := setup, present := true))
 
-  def get: Code[T] = Code(present.mux(Code._empty, setm.invokeCode()), value.load())
+  override def get: Code[T] =
+    CodeBuilder.scopedCode(null) { cb =>
+      cb.if_(!present, cb += setm.invoke(cb) )
+      value
+    }
 }
 
 class ThisFieldRef[T: TypeInfo](cb: ClassBuilder[_], f: Field[T]) extends Settable[T] {

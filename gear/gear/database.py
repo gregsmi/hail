@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import functools
 import logging
 import os
@@ -7,6 +8,7 @@ import traceback
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional, TypeVar
 
 import aiomysql
+import aiomysql.utils
 import kubernetes_asyncio.client
 import kubernetes_asyncio.config
 import pymysql
@@ -16,7 +18,7 @@ from gear.metrics import DB_CONNECTION_QUEUE_SIZE, SQL_TRANSACTIONS, PrometheusS
 from hailtop.aiotools import BackgroundTaskManager
 from hailtop.auth.sql_config import SQLConfig
 from hailtop.config import get_deploy_config
-from hailtop.utils import sleep_before_try
+from hailtop.utils import first_extant_file, sleep_before_try
 
 log = logging.getLogger('gear.database')
 
@@ -100,20 +102,23 @@ async def resolve_test_db_endpoint(sql_config: SQLConfig) -> SQLConfig:
 
 
 def get_sql_config(maybe_config_file: Optional[str] = None) -> SQLConfig:
-    if maybe_config_file is None:
-        config_file = os.environ.get('HAIL_DATABASE_CONFIG_FILE', '/sql-config/sql-config.json')
+    config_file = first_extant_file(
+        maybe_config_file,
+        os.environ.get('HAIL_DATABASE_CONFIG_FILE'),
+        '/sql-config/sql-config.json',
+    )
+    if config_file is not None:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            sql_config = SQLConfig.from_json(f.read())
+        sql_config.check()
+        log.info('using tls and verifying server certificates for MySQL')
     else:
-        config_file = maybe_config_file
-    with open(config_file, 'r', encoding='utf-8') as f:
-        sql_config = SQLConfig.from_json(f.read())
-    sql_config.check()
-    log.info('using tls and verifying server certificates for MySQL')
+        sql_config = SQLConfig.local_insecure_config()
+        log.info('Using unencrypted config for database on localhost')
     return sql_config
 
 
-def get_database_ssl_context(sql_config: Optional[SQLConfig] = None) -> ssl.SSLContext:
-    if sql_config is None:
-        sql_config = get_sql_config()
+def get_database_ssl_context(sql_config: SQLConfig) -> ssl.SSLContext:
     database_ssl_context = ssl.create_default_context(cafile=sql_config.ssl_ca)
     if sql_config.ssl_cert is not None and sql_config.ssl_key is not None:
         database_ssl_context.load_cert_chain(sql_config.ssl_cert, keyfile=sql_config.ssl_key, password=None)
@@ -125,13 +130,16 @@ def get_database_ssl_context(sql_config: Optional[SQLConfig] = None) -> ssl.SSLC
 @retry_transient_mysql_errors
 async def create_database_pool(
     config_file: Optional[str] = None, autocommit: bool = True, maxsize: int = 10
-) -> aiomysql.Pool:
+) -> aiomysql.utils._PoolContextManager:
     sql_config = get_sql_config(config_file)
     if get_deploy_config().location() != 'k8s' and sql_config.host.endswith('svc.cluster.local'):
         sql_config = await resolve_test_db_endpoint(sql_config)
-    ssl_context = get_database_ssl_context(sql_config)
-    assert ssl_context is not None
-    return await aiomysql.create_pool(
+    if sql_config.host == 'localhost':
+        ssl_context = None
+    else:
+        ssl_context = get_database_ssl_context(sql_config)
+        assert ssl_context is not None
+    return aiomysql.create_pool(
         maxsize=maxsize,
         # connection args
         host=sql_config.host,
@@ -290,11 +298,14 @@ class CallError(Exception):
 
 class Database:
     def __init__(self):
-        self.pool = None
-        self.connection_release_task_manager = None
+        self.pool: Optional[aiomysql.Pool] = None
+        self.connection_release_task_manager: Optional[BackgroundTaskManager] = None
+        self.async_exit_stack = contextlib.AsyncExitStack()
 
     async def async_init(self, config_file=None, maxsize=10):
-        self.pool = await create_database_pool(config_file=config_file, autocommit=False, maxsize=maxsize)
+        x = await create_database_pool(config_file=config_file, autocommit=False, maxsize=maxsize)
+        self.pool = await self.async_exit_stack.enter_async_context(x)
+        assert isinstance(self.pool, aiomysql.Pool)
         self.connection_release_task_manager = BackgroundTaskManager()
 
     def start(self, read_only=False):
@@ -354,3 +365,4 @@ class Database:
         self.connection_release_task_manager.shutdown()
         self.pool.close()
         await self.pool.wait_closed()
+        await self.async_exit_stack.aclose()

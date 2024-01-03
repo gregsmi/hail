@@ -1,15 +1,14 @@
 package is.hail.expr.ir.functions
 
-import is.hail.annotations.Region
 import is.hail.asm4s._
 import is.hail.expr.ir._
 import is.hail.expr.ir.orderings.CodeOrdering
-import is.hail.types.tcoerce
-import is.hail.types.physical.{PCanonicalArray, PInt32, PType}
-import is.hail.types.physical.stypes.{EmitType, SType}
+import is.hail.types.physical.stypes.EmitType
 import is.hail.types.physical.stypes.concrete.SIndexablePointer
-import is.hail.types.physical.stypes.primitives.{SBooleanValue, SFloat64, SInt32, SInt32Value}
 import is.hail.types.physical.stypes.interfaces._
+import is.hail.types.physical.stypes.primitives.{SBooleanValue, SFloat64, SInt32, SInt32Value}
+import is.hail.types.physical.{PCanonicalArray, PType}
+import is.hail.types.tcoerce
 import is.hail.types.virtual._
 import is.hail.utils._
 
@@ -38,9 +37,9 @@ object ArrayFunctions extends RegistryFunctions {
     val sum = genUID()
     StreamFold2(
       ToStream(a),
-      FastIndexedSeq((n, I32(0)), (sum, zero(t))),
+      FastSeq((n, I32(0)), (sum, zero(t))),
       elt,
-      FastIndexedSeq(Ref(n, TInt32) + I32(1), Ref(sum, t) + Ref(elt, t)),
+      FastSeq(Ref(n, TInt32) + I32(1), Ref(sum, t) + Ref(elt, t)),
       Cast(Ref(sum, t), TFloat64) / Cast(Ref(n, TInt32), TFloat64)
     )
   }
@@ -55,7 +54,7 @@ object ArrayFunctions extends RegistryFunctions {
       If(IsNA(a2),
         NA(typ),
         ToArray(StreamFlatMap(
-          MakeStream(FastIndexedSeq(a1, a2), TStream(typ)),
+          MakeStream(FastSeq(a1, a2), TStream(typ)),
           uid,
           ToStream(Ref(uid, a1.typ))))))
   }
@@ -101,7 +100,7 @@ object ArrayFunctions extends RegistryFunctions {
     registerIR2("extend", TArray(tv("T")), TArray(tv("T")), TArray(tv("T")))((_, a, b, _) => extend(a, b))
 
     registerIR2("append", TArray(tv("T")), tv("T"), TArray(tv("T"))) { (_, a, c, _) =>
-      extend(a, MakeArray(FastIndexedSeq(c), TArray(c.typ)))
+      extend(a, MakeArray(FastSeq(c), TArray(c.typ)))
     }
 
     registerIR2("contains", TArray(tv("T")), tv("T"), TBoolean) { (_, a, e, _) => contains(a, e) }
@@ -122,7 +121,7 @@ object ArrayFunctions extends RegistryFunctions {
         val e1 = Ref(a1id, tcoerce[TArray](array1.typ).elementType)
         val a2id = genUID()
         val e2 = Ref(a2id, tcoerce[TArray](array2.typ).elementType)
-        ToArray(StreamZip(FastIndexedSeq(ToStream(array1), ToStream(array2)), FastIndexedSeq(a1id, a2id),
+        ToArray(StreamZip(FastSeq(ToStream(array1), ToStream(array2)), FastSeq(a1id, a2id),
                                         irOp(e1, e2, errorID), ArrayZipBehavior.AssertSameLength))
       }
     }
@@ -138,9 +137,9 @@ object ArrayFunctions extends RegistryFunctions {
         val first = genUID()
         val acc = genUID()
         StreamFold2(ToStream(a),
-          FastIndexedSeq((acc, NA(t)), (first, True())),
+          FastSeq((acc, NA(t)), (first, True())),
           value,
-          FastIndexedSeq(
+          FastSeq(
             If(Ref(first, TBoolean), Ref(value, t), invoke(op, t, Ref(acc, t), Ref(value, t))),
             False()
           ),
@@ -165,11 +164,12 @@ object ArrayFunctions extends RegistryFunctions {
       def ref(i: IR) = ArrayRef(a, i, errorID)
       def div(a: IR, b: IR): IR = ApplyBinaryPrimOp(BinaryOp.defaultDivideOp(t), a, b)
 
-      Let(a.name, ArraySort(StreamFilter(ToStream(array), v.name, !IsNA(v))),
+      Let(
+        FastSeq(a.name -> ArraySort(StreamFilter(ToStream(array), v.name, !IsNA(v)))),
         If(IsNA(a),
           NA(t),
-          Let(size.name,
-            ArrayLen(a),
+          Let(
+            FastSeq(size.name -> ArrayLen(a)),
             If(size.ceq(0),
               NA(t),
               If(invoke("mod", TInt32, size, 2).cne(0),
@@ -188,22 +188,23 @@ object ArrayFunctions extends RegistryFunctions {
       def updateAccum(min: IR, midx: IR): IR =
         MakeStruct(FastSeq("m" -> min, "midx" -> midx))
 
-      val body =
-        Let(value, ArrayRef(a, Ref(idx, TInt32), errorID),
-          Let(m, GetField(Ref(accum, tAccum), "m"),
-            If(IsNA(Ref(value, t)),
-              Ref(accum, tAccum),
-              If(IsNA(Ref(m, t)),
-                updateAccum(Ref(value, t), Ref(idx, TInt32)),
-                If(ApplyComparisonOp(op(t), Ref(value, t), Ref(m, t)),
-                  updateAccum(Ref(value, t), Ref(idx, TInt32)),
-                  Ref(accum, tAccum))))))
       GetField(StreamFold(
         StreamRange(I32(0), ArrayLen(a), I32(1)),
         NA(tAccum),
         accum,
         idx,
-        body
+        Let(
+          FastSeq(
+            value -> ArrayRef(a, Ref(idx, TInt32), errorID),
+            m -> GetField(Ref(accum, tAccum), "m"),
+          ),
+          If(IsNA(Ref(value, t)),
+            Ref(accum, tAccum),
+            If(IsNA(Ref(m, t)),
+              updateAccum(Ref(value, t), Ref(idx, TInt32)),
+              If(ApplyComparisonOp(op(t), Ref(value, t), Ref(m, t)),
+                updateAccum(Ref(value, t), Ref(idx, TInt32)),
+                Ref(accum, tAccum)))))
       ), "midx")
     }
 
@@ -223,9 +224,17 @@ object ArrayFunctions extends RegistryFunctions {
       def updateAccum(m: IR, midx: IR, count: IR): IR =
         MakeStruct(FastSeq("m" -> m, "midx" -> midx, "count" -> count))
 
-      val body =
-        Let(value, ArrayRef(a, Ref(idx, TInt32), errorID),
-          Let(m, GetField(Ref(accum, tAccum), "m"),
+      val fold =
+        StreamFold(
+          StreamRange(I32(0), ArrayLen(a), I32(1)),
+          NA(tAccum),
+          accum,
+          idx,
+          Let(
+            FastSeq(
+              value -> ArrayRef(a, Ref(idx, TInt32), errorID),
+              m -> GetField(Ref(accum, tAccum), "m")
+            ),
             If(IsNA(Ref(value, t)),
               Ref(accum, tAccum),
               If(IsNA(Ref(m, t)),
@@ -237,17 +246,13 @@ object ArrayFunctions extends RegistryFunctions {
                       Ref(value, t),
                       Ref(idx, TInt32),
                       ApplyBinaryPrimOp(Add(), GetField(Ref(accum, tAccum), "count"), I32(1))),
-                    Ref(accum, tAccum)))))))
+                    Ref(accum, tAccum))))))
+        )
 
-      Let(result, StreamFold(
-        StreamRange(I32(0), ArrayLen(a), I32(1)),
-        NA(tAccum),
-        accum,
-        idx,
-        body
-      ), If(ApplyComparisonOp(EQ(TInt32), GetField(Ref(result, tAccum), "count"), I32(1)),
-        GetField(Ref(result, tAccum), "midx"),
-        NA(TInt32)))
+      Let(FastSeq(result -> fold),
+        If(ApplyComparisonOp(EQ(TInt32), GetField(Ref(result, tAccum), "count"), I32(1)),
+          GetField(Ref(result, tAccum), "midx"),
+          NA(TInt32)))
     }
 
     registerIR1("uniqueMinIndex", TArray(tv("T")), TInt32)((_, a, errorID) => uniqueIndex(a, LT(_), errorID))
@@ -283,7 +288,7 @@ object ArrayFunctions extends RegistryFunctions {
         ec2.toI(cb).flatMap(cb) { case pv2: SIndexableValue =>
           val l1 = cb.newLocal("len1", pv1.loadLength())
           val l2 = cb.newLocal("len2", pv2.loadLength())
-          cb.ifx(l1.cne(l2), {
+          cb.if_(l1.cne(l2), {
             cb._fatalWithError(errorID,
               "'corr': cannot compute correlation between arrays of different lengths: ",
                 l1.toS,
@@ -298,7 +303,7 @@ object ArrayFunctions extends RegistryFunctions {
             val xySum = cb.newLocal[Double]("xySum", 0d)
             val i = cb.newLocal[Int]("i")
             val n = cb.newLocal[Int]("n", 0)
-            cb.forLoop(cb.assign(i, 0), i < l1, cb.assign(i, i + 1), {
+            cb.for_(cb.assign(i, 0), i < l1, cb.assign(i, i + 1), {
               pv1.loadElement(cb, i).consume(cb, {}, { xc =>
                 pv2.loadElement(cb, i).consume(cb, {}, { yc =>
                   val x = cb.newLocal[Double]("x", xc.asDouble.value)
@@ -326,25 +331,25 @@ object ArrayFunctions extends RegistryFunctions {
       { case (rt, inArrayET, la, n, _) => EmitType(PCanonicalArray(PType.canonical(inArrayET.st.asInstanceOf[SContainer].elementType.storageType())).sType, inArrayET.required && la.required && n.required) })(
       { case (cb, region, rt: SIndexablePointer, err, array, localAlleles, nTotalAlleles, fillInValue) =>
 
-        IEmitCode.multiMapEmitCodes(cb, FastIndexedSeq(array, localAlleles, nTotalAlleles)) {
+        IEmitCode.multiMapEmitCodes(cb, FastSeq(array, localAlleles, nTotalAlleles)) {
           case IndexedSeq(array: SIndexableValue, localAlleles: SIndexableValue, _nTotalAlleles: SInt32Value) =>
             def triangle(x: Value[Int]): Code[Int] = (x * (x + 1)) / 2
             val nTotalAlleles =_nTotalAlleles.value
             val nGenotypes = cb.memoize(triangle(nTotalAlleles))
             val pt = rt.pType.asInstanceOf[PCanonicalArray]
-            cb.ifx(nTotalAlleles < 0, cb._fatalWithError(err, "local_to_global: n_total_alleles less than 0: ", nGenotypes.toS))
+            cb.if_(nTotalAlleles < 0, cb._fatalWithError(err, "local_to_global: n_total_alleles less than 0: ", nGenotypes.toS))
             val localLen = array.loadLength()
             val laLen = localAlleles.loadLength()
-            cb.ifx(localLen cne triangle(laLen), cb._fatalWithError(err, "local_to_global: array should be the triangle number of local alleles: found: ", localLen.toS, " elements, and", laLen.toS, " alleles"))
+            cb.if_(localLen cne triangle(laLen), cb._fatalWithError(err, "local_to_global: array should be the triangle number of local alleles: found: ", localLen.toS, " elements, and", laLen.toS, " alleles"))
 
             val fillIn = cb.memoize(fillInValue)
 
             val (push, finish) = pt.constructFromIndicesUnsafe(cb, region, nGenotypes, false)
 
             // fill in if necessary
-            cb.ifx(localLen cne nGenotypes, {
+            cb.if_(localLen cne nGenotypes, {
               val i = cb.newLocal[Int]("i", 0)
-              cb.whileLoop(i < nGenotypes, {
+              cb.while_(i < nGenotypes, {
                 push(cb, i, fillIn.toI(cb))
                 cb.assign(i, i + 1)
               })
@@ -353,16 +358,16 @@ object ArrayFunctions extends RegistryFunctions {
 
             val i = cb.newLocal[Int]("la_i", 0)
             val laGIndexer = cb.newLocal[Int]("g_indexer", 0)
-            cb.whileLoop(i < laLen, {
+            cb.while_(i < laLen, {
               val lai = localAlleles.loadElement(cb, i).get(cb, "local_to_global: local alleles elements cannot be missing", err).asInt32.value
-              cb.ifx(lai >= nTotalAlleles, cb._fatalWithError(err, "local_to_global: local allele of ", lai.toS, " out of bounds given n_total_alleles of ", nTotalAlleles.toS))
+              cb.if_(lai >= nTotalAlleles, cb._fatalWithError(err, "local_to_global: local allele of ", lai.toS, " out of bounds given n_total_alleles of ", nTotalAlleles.toS))
 
               val j = cb.newLocal[Int]("la_j", 0)
-              cb.whileLoop(j <= i, {
+              cb.while_(j <= i, {
                 val laj = localAlleles.loadElement(cb, j).get(cb, "local_to_global: local alleles elements cannot be missing", err).asInt32.value
 
                 val dest = cb.newLocal[Int]("dest")
-                cb.ifx(lai >= laj, {
+                cb.if_(lai >= laj, {
                   cb.assign(dest, triangle(lai) + laj)
                 }, {
                   cb.assign(dest, triangle(laj) + lai)
@@ -384,18 +389,18 @@ object ArrayFunctions extends RegistryFunctions {
     {case (rt, inArrayET, la, n, _, omitFirst) => EmitType(PCanonicalArray(PType.canonical(inArrayET.st.asInstanceOf[SContainer].elementType.storageType())).sType, inArrayET.required && la.required && n.required && omitFirst.required)})(
       { case (cb, region, rt: SIndexablePointer, err, array, localAlleles, nTotalAlleles, fillInValue, omitFirstElement) =>
 
-        IEmitCode.multiMapEmitCodes(cb, FastIndexedSeq(array, localAlleles, nTotalAlleles, omitFirstElement)) {
+        IEmitCode.multiMapEmitCodes(cb, FastSeq(array, localAlleles, nTotalAlleles, omitFirstElement)) {
           case IndexedSeq(array: SIndexableValue, localAlleles: SIndexableValue, _nTotalAlleles: SInt32Value, omitFirst: SBooleanValue) =>
             val nTotalAlleles = _nTotalAlleles.value
             val pt = rt.pType.asInstanceOf[PCanonicalArray]
-            cb.ifx(nTotalAlleles < 0, cb._fatalWithError(err, "local_to_global: n_total_alleles less than 0: ", nTotalAlleles.toS))
+            cb.if_(nTotalAlleles < 0, cb._fatalWithError(err, "local_to_global: n_total_alleles less than 0: ", nTotalAlleles.toS))
             val localLen = array.loadLength()
-            cb.ifx(localLen cne localAlleles.loadLength(), cb._fatalWithError(err,"local_to_global: array and local alleles lengths differ: ", localLen.toS, ", ", localAlleles.loadLength().toS))
+            cb.if_(localLen cne localAlleles.loadLength(), cb._fatalWithError(err,"local_to_global: array and local alleles lengths differ: ", localLen.toS, ", ", localAlleles.loadLength().toS))
 
             val fillIn = cb.memoize(fillInValue)
 
             val idxAdjustmentForOmitFirst = cb.newLocal[Int]("idxAdj")
-            cb.ifx(omitFirst.value,
+            cb.if_(omitFirst.value,
               cb.assign(idxAdjustmentForOmitFirst, 1),
               cb.assign(idxAdjustmentForOmitFirst, 0))
 
@@ -404,18 +409,18 @@ object ArrayFunctions extends RegistryFunctions {
             val (push, finish) = pt.constructFromIndicesUnsafe(cb, region, globalLen, false)
 
             // fill in if necessary
-            cb.ifx(localLen cne globalLen, {
+            cb.if_(localLen cne globalLen, {
               val i = cb.newLocal[Int]("i", 0)
-              cb.whileLoop(i < globalLen, {
+              cb.while_(i < globalLen, {
                 push(cb, i, fillIn.toI(cb))
                 cb.assign(i, i + 1)
               })
             })
 
             val i = cb.newLocal[Int]("la_i", 0)
-            cb.whileLoop(i < localLen, {
+            cb.while_(i < localLen, {
               val lai = localAlleles.loadElement(cb, i + idxAdjustmentForOmitFirst).get(cb, "local_to_global: local alleles elements cannot be missing", err).asInt32.value
-              cb.ifx(lai >= nTotalAlleles, cb._fatalWithError(err, "local_to_global: local allele of ", lai.toS, " out of bounds given n_total_alleles of ", nTotalAlleles.toS))
+              cb.if_(lai >= nTotalAlleles, cb._fatalWithError(err, "local_to_global: local allele of ", lai.toS, " out of bounds given n_total_alleles of ", nTotalAlleles.toS))
               push(cb, cb.memoize(lai - idxAdjustmentForOmitFirst), array.loadElement(cb, i))
 
               cb.assign(i, i + 1)

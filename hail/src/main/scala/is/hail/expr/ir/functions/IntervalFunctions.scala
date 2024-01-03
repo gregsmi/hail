@@ -1,6 +1,6 @@
 package is.hail.expr.ir.functions
 
-import is.hail.asm4s.{Code, _}
+import is.hail.asm4s._
 import is.hail.expr.ir._
 import is.hail.expr.ir.orderings.CodeOrdering
 import is.hail.types.physical._
@@ -9,7 +9,7 @@ import is.hail.types.physical.stypes.interfaces._
 import is.hail.types.physical.stypes.primitives.{SBoolean, SBooleanValue, SInt32}
 import is.hail.types.physical.stypes.{EmitType, SType, SValue}
 import is.hail.types.virtual._
-import is.hail.utils.FastIndexedSeq
+import is.hail.utils.FastSeq
 
 object IntervalFunctions extends RegistryFunctions {
 
@@ -37,18 +37,18 @@ object IntervalFunctions extends RegistryFunctions {
     val result = cb.newLocal[Int]("intervalEndpointCompare")
 
     cb.assign(result, ord.compareNonnull(cb, lhs, rhs))
-    cb.ifx(result.ceq(0),
+    cb.if_(result.ceq(0),
       cb.assign(result, lhsLeansRight.toI - rhsLeansRight.toI))
     result
   }
 
   def pointIntervalCompare(cb: EmitCodeBuilder, point: SValue, interval: SIntervalValue): IEmitCode = {
     interval.loadStart(cb).flatMap(cb) { start =>
-      cb.ifx(pointLTIntervalEndpoint(cb, point, start, !interval.includesStart), {
+      cb.if_(pointLTIntervalEndpoint(cb, point, start, !interval.includesStart), {
         IEmitCode.present(cb, primitive(const(-1)))
       }, {
         interval.loadEnd(cb).map(cb) { end =>
-          cb.ifx(pointLTIntervalEndpoint(cb, point, end, interval.includesEnd), {
+          cb.if_(pointLTIntervalEndpoint(cb, point, end, interval.includesEnd), {
             primitive(const(0))
           }, {
             primitive(const(1))
@@ -60,11 +60,11 @@ object IntervalFunctions extends RegistryFunctions {
 
   def intervalPointCompare(cb: EmitCodeBuilder, interval: SIntervalValue, point: SValue): IEmitCode = {
     interval.loadStart(cb).flatMap(cb) { start =>
-      cb.ifx(pointLTIntervalEndpoint(cb, point, start, !interval.includesStart), {
+      cb.if_(pointLTIntervalEndpoint(cb, point, start, !interval.includesStart), {
         IEmitCode.present(cb, primitive(const(1)))
       }, {
         interval.loadEnd(cb).map(cb) { end =>
-          cb.ifx(pointLTIntervalEndpoint(cb, point, end, interval.includesEnd), {
+          cb.if_(pointLTIntervalEndpoint(cb, point, end, interval.includesEnd), {
             primitive(const(0))
           }, {
             primitive(const(-1))
@@ -76,7 +76,7 @@ object IntervalFunctions extends RegistryFunctions {
 
   def intervalContains(cb: EmitCodeBuilder, interval: SIntervalValue, point: SValue): IEmitCode = {
     interval.loadStart(cb).flatMap(cb) { start =>
-      cb.ifx(pointGTIntervalEndpoint(cb, point, start, !interval.includesStart),
+      cb.if_(pointGTIntervalEndpoint(cb, point, start, !interval.includesStart),
         interval.loadEnd(cb).map(cb) { end =>
           primitive(cb.memoize(pointLTIntervalEndpoint(cb, point, end, interval.includesEnd)))
         },
@@ -86,11 +86,11 @@ object IntervalFunctions extends RegistryFunctions {
 
   def intervalsOverlap(cb: EmitCodeBuilder, lhs: SIntervalValue, rhs: SIntervalValue): IEmitCode = {
     IEmitCode.multiFlatMap(cb,
-      FastIndexedSeq(lhs.loadEnd, rhs.loadStart)
+      FastSeq(lhs.loadEnd, rhs.loadStart)
     ) { case Seq(lEnd, rStart) =>
-      cb.ifx(intervalEndpointCompare(cb, lEnd, lhs.includesEnd, rStart, !rhs.includesStart) > 0, {
+      cb.if_(intervalEndpointCompare(cb, lEnd, lhs.includesEnd, rStart, !rhs.includesStart) > 0, {
         IEmitCode.multiMap(cb,
-          FastIndexedSeq(lhs.loadStart, rhs.loadEnd)
+          FastSeq(lhs.loadStart, rhs.loadEnd)
         ) { case Seq(lStart, rEnd) =>
           primitive(cb.memoize(intervalEndpointCompare(cb, rEnd, rhs.includesEnd, lStart, !lhs.includesStart) > 0))
         }
@@ -111,23 +111,23 @@ object IntervalFunctions extends RegistryFunctions {
     val result = cb.newLocal[Int]("partitionIntervalEndpointCompare")
     val Lafter = CodeLabel()
     val Leq = CodeLabel()
-    cb.ifx(prefixLength.ceq(0), cb.goto(Leq))
+    cb.if_(prefixLength.ceq(0), cb.goto(Leq))
     (0 until (lStruct.st.size min rStruct.st.size)).foreach { idx =>
       val lField = cb.memoize(lStruct.loadField(cb, idx))
       val rField = cb.memoize(rStruct.loadField(cb, idx))
       cb.assign(result,
         cb.emb.ecb.getOrderingFunction(lField.st, rField.st, CodeOrdering.Compare())
           .apply(cb, lField, rField))
-      cb.ifx(result.cne(0), cb.goto(Lafter))
+      cb.if_(result.cne(0), cb.goto(Lafter))
       if (idx < (lStruct.st.size min rStruct.st.size)) {
-        cb.ifx(prefixLength.ceq(idx + 1), cb.goto(Leq))
+        cb.if_(prefixLength.ceq(idx + 1), cb.goto(Leq))
       }
     }
 
     cb.define(Leq)
     val c = cb.memoize(lLength - rLength)
-    val ls = cb.ifx(c <= 0, lSign, 0)
-    val rs = cb.ifx(c >= 0, rSign, 0)
+    val ls = (c <= 0).mux(lSign, 0)
+    val rs = (c >= 0).mux(rSign, 0)
     cb.assign(result, ls - rs)
 
     cb.define(Lafter)
@@ -163,13 +163,13 @@ object IntervalFunctions extends RegistryFunctions {
     val start = interval.loadStart(cb)
       .get(cb, "partition intervals cannot have missing endpoints")
       .asBaseStruct
-    cb.ifx(compareStructWithPartitionIntervalEndpoint(cb, point, start, !interval.includesStart) < 0, {
+    cb.if_(compareStructWithPartitionIntervalEndpoint(cb, point, start, !interval.includesStart) < 0, {
       primitive(const(-1))
     }, {
       val end = interval.loadEnd(cb)
         .get(cb, "partition intervals cannot have missing endpoints")
         .asBaseStruct
-      cb.ifx(compareStructWithPartitionIntervalEndpoint(cb, point, end, interval.includesEnd) < 0, {
+      cb.if_(compareStructWithPartitionIntervalEndpoint(cb, point, end, interval.includesEnd) < 0, {
         primitive(const(0))
       }, {
         primitive(const(1))
@@ -294,7 +294,7 @@ object IntervalFunctions extends RegistryFunctions {
         EmitType(SBoolean, required)
     }) { case (cb, r, rt, _, int, point) =>
       IEmitCode.multiFlatMap(cb,
-        FastIndexedSeq(int.toI, point.toI)
+        FastSeq(int.toI, point.toI)
       ) { case Seq(interval: SIntervalValue, point) =>
         intervalContains(cb, interval, point)
       }
@@ -312,7 +312,7 @@ object IntervalFunctions extends RegistryFunctions {
         val required = i1t.required && i2t.required && i1ST.pointEmitType.required && i2ST.pointEmitType.required
         EmitType(SBoolean, required)
     }) { case (cb, r, rt, _, interval1: EmitCode, interval2: EmitCode) =>
-      IEmitCode.multiFlatMap(cb, FastIndexedSeq(interval1.toI, interval2.toI)) {
+      IEmitCode.multiFlatMap(cb, FastSeq(interval1.toI, interval2.toI)) {
         case Seq(interval1: SIntervalValue, interval2: SIntervalValue) =>
         intervalsOverlap(cb, interval1, interval2)
       }
@@ -368,7 +368,7 @@ object IntervalFunctions extends RegistryFunctions {
 
     val requiredInt = EmitType(SInt32, true)
     val equalRangeResultType = TTuple(TInt32, TInt32)
-    val equalRangeResultSType = SStackStruct(equalRangeResultType, FastIndexedSeq(requiredInt, requiredInt))
+    val equalRangeResultSType = SStackStruct(equalRangeResultType, FastSeq(requiredInt, requiredInt))
 
     registerSCode2("partitionerFindIntervalRange",
       TArray(partitionIntervalType), partitionIntervalType, equalRangeResultType,
@@ -376,7 +376,7 @@ object IntervalFunctions extends RegistryFunctions {
     ) { case (_, cb, rt, intervals: SIndexableValue, query: SIntervalValue, errorID) =>
       val (start, end) = partitionerFindIntervalRange(cb, intervals, query, errorID)
       new SStackStructValue(equalRangeResultSType,
-        FastIndexedSeq(
+        FastSeq(
           EmitValue.present(primitive(start)),
           EmitValue.present(primitive(end))))
     }
@@ -405,7 +405,7 @@ object IntervalFunctions extends RegistryFunctions {
 
         val isContained = cb.newLocal[Boolean]("partitionInterval_b", pointGTLeft)
 
-        cb.ifx(isContained, {
+        cb.if_(isContained, {
           // check right endpoint
           val rightTuple = interval.loadEnd(cb).get(cb).asBaseStruct
 

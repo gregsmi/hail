@@ -1128,7 +1128,6 @@ backend.close()
     j = b.create_job(
         HAIL_GENETICS_HAILTOP_IMAGE,
         ['/bin/bash', '-c', f'''python3 -c \'{script}\''''],
-        mount_tokens=True,
     )
     b.submit()
     status = j.wait()
@@ -1158,7 +1157,6 @@ backend.close()
 python3 -c \'{script}\'''',
         ],
         env={'HAIL_DOMAIN': DOMAIN, 'HAIL_DEFAULT_NAMESPACE': 'default', 'HAIL_LOCATION': 'external'},
-        mount_tokens=True,
     )
     b.submit()
     status = j.wait()
@@ -1434,12 +1432,13 @@ def test_pool_standard_instance_cheapest(client: BatchClient):
 
 
 @skip_in_azure
+@pytest.mark.timeout(10 * 60)
 def test_gpu_accesibility_g2(client: BatchClient):
     b = create_batch(client)
     resources = {'machine_type': "g2-standard-4", 'storage': '100Gi'}
     j = b.create_job(
         os.environ['HAIL_GPU_IMAGE'],
-        ['python', '-c', 'import torch; assert torch.cuda.is_available()'],
+        ['python3', '-c', 'import torch; assert torch.cuda.is_available()'],
         resources=resources,
     )
     b.submit()

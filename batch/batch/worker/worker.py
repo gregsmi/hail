@@ -36,13 +36,11 @@ import aiodocker  # type: ignore
 import aiodocker.images
 import aiohttp
 import aiohttp.client_exceptions
-import aiomonitor
 import aiorwlock
 import async_timeout
 import orjson
 from aiodocker.exceptions import DockerError  # type: ignore
 from aiohttp import web
-from sortedcontainers import SortedSet
 
 from gear import json_request, json_response
 from hailtop import aiotools, httpx
@@ -86,7 +84,6 @@ from ..instance_config import InstanceConfig
 from ..publicly_available_images import publicly_available_images
 from ..resource_usage import ResourceUsageMonitor
 from ..semaphore import FIFOWeightedSemaphore
-from ..utils import Box
 from ..worker.worker_api import CloudDisk, CloudWorkerAPI, ContainerRegistryCredentials
 from .credentials import CloudUserCredentials
 from .jvm_entryway_protocol import EndOfStream, read_bool, read_int, read_str, write_int, write_str
@@ -202,6 +199,8 @@ log.info(f'REGION {REGION}')
 instance_config: Optional[InstanceConfig] = None
 
 N_SLOTS = 4 * CORES  # Jobs are allowed at minimum a quarter core
+
+N_JVM_CONTAINERS = sum(1 for jvm_cores in (1, 2, 4, 8) for _ in range(CORES // jvm_cores))
 
 deploy_config = get_deploy_config()
 
@@ -345,11 +344,12 @@ class NetworkAllocator:
         self.internet_interface = INTERNET_INTERFACE
 
     async def reserve(self):
-        for subnet_index in range(N_SLOTS):
+        for subnet_index in range(N_SLOTS + N_JVM_CONTAINERS):
             public = NetworkNamespace(subnet_index, private=False, internet_interface=self.internet_interface)
             await public.init()
             self.public_networks.put_nowait(public)
 
+        for subnet_index in range(N_SLOTS):
             private = NetworkNamespace(subnet_index, private=True, internet_interface=self.internet_interface)
 
             await private.init()
@@ -1191,9 +1191,10 @@ class Container:
                 'resources': {
                     "devices": [{"allow": False, "access": "rwm"}],
                     'cpu': {'shares': weight},
-                    'memory': {
-                        'limit': self.memory_in_bytes,
-                        'reservation': self.memory_in_bytes,
+                    'unified': {  # https://github.com/opencontainers/runtime-spec/blob/main/config-linux.md
+                        'memory.max': str(int(0.99 * self.memory_in_bytes)),
+                        'memory.high': str(int(0.95 * self.memory_in_bytes)),
+                        'memory.swap.max': '0',
                     },
                     # 'blockIO': {'weight': min(weight, 1000)}, FIXME blkio.weight not supported
                 },
@@ -1351,7 +1352,9 @@ class Container:
         assert self.image.image_config
         assert CLOUD_WORKER_API
         env = (
-            self.image.image_config['Config']['Env'] + self.env + CLOUD_WORKER_API.cloud_specific_env_vars_for_user_jobs
+            (self.image.image_config['Config']['Env'] or [])
+            + self.env
+            + CLOUD_WORKER_API.cloud_specific_env_vars_for_user_jobs
         )
         machine_family = INSTANCE_CONFIG["machine_type"].split("-")[0]
         if is_gpu(machine_family):
@@ -1732,6 +1735,8 @@ class DockerJob(Job):
         hail_extra_env = [
             {'name': 'HAIL_REGION', 'value': REGION},
             {'name': 'HAIL_BATCH_ID', 'value': str(batch_id)},
+            {'name': 'HAIL_JOB_ID', 'value': str(self.job_id)},
+            {'name': 'HAIL_ATTEMPT_ID', 'value': str(self.attempt_id)},
             {'name': 'HAIL_IDENTITY_PROVIDER_JSON', 'value': json.dumps(self.credentials.identity_provider_json)},
         ]
         self.env += hail_extra_env
@@ -1822,7 +1827,7 @@ class DockerJob(Job):
     async def setup_io(self):
         assert instance_config
         if not instance_config.job_private:
-            if self.worker.data_disk_space_remaining.value < self.external_storage_in_gib:
+            if self.worker.data_disk_space_remaining < self.external_storage_in_gib:
                 log.info(
                     f'worker data disk storage is full: {self.external_storage_in_gib}Gi requested and {self.worker.data_disk_space_remaining}Gi remaining'
                 )
@@ -1843,7 +1848,7 @@ class DockerJob(Job):
                 log.info(f'created disk {self.disk.name} for job {self.id}')
                 return
 
-            self.worker.data_disk_space_remaining.value -= self.external_storage_in_gib
+            self.worker.data_disk_space_remaining -= self.external_storage_in_gib
             log.info(
                 f'acquired {self.external_storage_in_gib}Gi from worker data disk storage with {self.worker.data_disk_space_remaining}Gi remaining'
             )
@@ -1853,16 +1858,20 @@ class DockerJob(Job):
 
     async def run_container(self, container: Container, task_name: str):
         async def on_completion():
-            with container._step('uploading_log'):
-                assert self.worker.file_store
-                await self.worker.file_store.write_log_file(
-                    self.format_version,
-                    self.batch_id,
-                    self.job_id,
-                    self.attempt_id,
-                    task_name,
-                    await self.worker.fs.read(container.log_path),
-                )
+            if container.state in ('pending', 'creating'):
+                return
+
+            if os.path.exists(container.log_path):
+                with container._step('uploading_log'):
+                    assert self.worker.file_store
+                    await self.worker.file_store.write_log_file(
+                        self.format_version,
+                        self.batch_id,
+                        self.job_id,
+                        self.attempt_id,
+                        task_name,
+                        await self.worker.fs.read(container.log_path),
+                    )
 
             with container._step('uploading_resource_usage'):
                 await self.worker.file_store.write_resource_usage_file(
@@ -1878,6 +1887,8 @@ class DockerJob(Job):
             await container.run(on_completion)
         except asyncio.CancelledError:
             raise
+        except ContainerDeletedError as exc:
+            log.info(f'Container {container} was deleted while running.', exc)
         except Exception:
             log.exception(f'While running container: {container}')
 
@@ -2003,7 +2014,7 @@ class DockerJob(Job):
             except Exception:
                 log.exception(f'while detaching and deleting disk {self.disk.name} for job {self.id}')
         else:
-            self.worker.data_disk_space_remaining.value += self.external_storage_in_gib
+            self.worker.data_disk_space_remaining += self.external_storage_in_gib
 
         if self.cloudfuse:
             for config in self.cloudfuse:
@@ -2317,11 +2328,12 @@ class JVMJob(Job):
         assert self.worker.fs
         assert self.jvm
 
-        with self.step('uploading_log'):
-            log_contents = await self.worker.fs.read(self.log_file)
-            await self.worker.file_store.write_log_file(
-                self.format_version, self.batch_id, self.job_id, self.attempt_id, 'main', log_contents
-            )
+        if os.path.exists(self.log_file):
+            with self.step('uploading_log'):
+                log_contents = await self.worker.fs.read(self.log_file)
+                await self.worker.file_store.write_log_file(
+                    self.format_version, self.batch_id, self.job_id, self.attempt_id, 'main', log_contents
+                )
 
         with self.step('uploading_resource_usage'):
             resource_usage_contents = await self.jvm.get_job_resource_usage()
@@ -2361,6 +2373,7 @@ class JVMJob(Job):
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
+                        await self.worker.return_broken_jvm(self.jvm)
                         raise IncompleteJVMCleanupError(
                             f'while unmounting fuse blob storage {bucket} from {mount_path} for {self.jvm_name} for job {self.id}'
                         ) from e
@@ -2383,7 +2396,7 @@ class JVMJob(Job):
 
     async def get_resource_usage(self) -> Dict[str, bytes]:
         if self.jvm:
-            contents = await self.jvm.get_resource_usage()
+            contents = await self.jvm.get_job_resource_usage()
         else:
             contents = ResourceUsageMonitor.no_data()
         return {'main': contents}
@@ -2898,13 +2911,54 @@ class JVM:
         return await self.container.get_job_resource_usage()
 
 
+class JVMPool:
+    global_jvm_index = 0
+
+    def __init__(self, n_cores: int, worker: 'Worker'):
+        self.queue: asyncio.Queue[JVM] = asyncio.Queue()
+        self.total_jvms_including_borrowed = 0
+        self.max_jvms = CORES // n_cores
+        self.n_cores = n_cores
+        self.worker = worker
+
+    def borrow_jvm_nowait(self) -> JVM:
+        return self.queue.get_nowait()
+
+    async def borrow_jvm(self) -> JVM:
+        return await self.queue.get()
+
+    def return_jvm(self, jvm: JVM):
+        assert self.n_cores == jvm.n_cores
+        assert self.queue.qsize() < self.max_jvms
+        self.queue.put_nowait(jvm)
+
+    async def return_broken_jvm(self, jvm: JVM):
+        await jvm.kill()
+        self.total_jvms_including_borrowed -= 1
+        await self.create_jvm()
+        log.info(f'killed {jvm} and recreated a new jvm')
+
+    async def create_jvm(self):
+        assert self.queue.qsize() < self.max_jvms
+        assert self.total_jvms_including_borrowed < self.max_jvms
+        self.queue.put_nowait(await JVM.create(JVMPool.global_jvm_index, self.n_cores, self.worker))
+        self.total_jvms_including_borrowed += 1
+        JVMPool.global_jvm_index += 1
+
+    def full(self) -> bool:
+        return self.total_jvms_including_borrowed == self.max_jvms
+
+    def __repr__(self):
+        return f'JVMPool({self.queue!r}, {self.total_jvms_including_borrowed!r}, {self.max_jvms!r}, {self.n_cores!r})'
+
+
 class Worker:
     def __init__(self, client_session: httpx.ClientSession):
         self.active = False
         self.cores_mcpu = CORES * 1000
         self.last_updated = time_msecs()
         self.cpu_sem = FIFOWeightedSemaphore(self.cores_mcpu)
-        self.data_disk_space_remaining = Box(UNRESERVED_WORKER_DATA_DISK_SIZE_GB)
+        self.data_disk_space_remaining = UNRESERVED_WORKER_DATA_DISK_SIZE_GB
         self.pool = concurrent.futures.ThreadPoolExecutor()
         self.jobs: Dict[Tuple[int, int], Job] = {}
         self.stop_event = asyncio.Event()
@@ -2930,38 +2984,52 @@ class Worker:
 
         self.cloudfuse_mount_manager = ReadOnlyCloudfuseManager()
 
+        self._jvmpools_by_cores: Dict[int, JVMPool] = {n_cores: JVMPool(n_cores, self) for n_cores in (1, 2, 4, 8)}
+        self._waiting_for_jvm_with_n_cores: asyncio.Queue[int] = asyncio.Queue()
         self._jvm_initializer_task = asyncio.create_task(self._initialize_jvms())
-        self._jvms = SortedSet([], key=lambda jvm: jvm.n_cores)
 
     async def _initialize_jvms(self):
         assert instance_config
-        if instance_config.worker_type() in ('standard', 'D', 'highmem', 'E'):
-            jvms: List[Awaitable[JVM]] = []
-            for jvm_cores in (1, 2, 4, 8):
-                for _ in range(CORES // jvm_cores):
-                    jvms.append(JVM.create(len(jvms), jvm_cores, self))
-            self._jvms.update(await asyncio.gather(*jvms))
-        log.info(f'JVMs initialized {self._jvms}')
+        if instance_config.worker_type() not in ('standard', 'D', 'highmem', 'E'):
+            log.info('no JVMs initialized')
+
+        while True:
+            try:
+                requested_n_cores = self._waiting_for_jvm_with_n_cores.get_nowait()
+                await self._jvmpools_by_cores[requested_n_cores].create_jvm()
+            except asyncio.QueueEmpty:
+                next_unfull_jvmpool = None
+                for jvmpool in self._jvmpools_by_cores.values():
+                    if not jvmpool.full():
+                        next_unfull_jvmpool = jvmpool
+                        break
+
+                if next_unfull_jvmpool is None:
+                    break
+                await next_unfull_jvmpool.create_jvm()
+
+        assert self._waiting_for_jvm_with_n_cores.empty()
+        assert all(jvmpool.full() for jvmpool in self._jvmpools_by_cores.values())
+        log.info(f'JVMs initialized {self._jvmpools_by_cores}')
 
     async def borrow_jvm(self, n_cores: int) -> JVM:
         assert instance_config
         if instance_config.worker_type() not in ('standard', 'D', 'highmem', 'E'):
             raise ValueError(f'no JVMs available on {instance_config.worker_type()}')
-        await self._jvm_initializer_task
-        assert self._jvms
-        index = self._jvms.bisect_key_left(n_cores)
-        assert index < len(self._jvms), index
-        return self._jvms.pop(index)
+
+        jvmpool = self._jvmpools_by_cores[n_cores]
+        try:
+            return jvmpool.borrow_jvm_nowait()
+        except asyncio.QueueEmpty:
+            self._waiting_for_jvm_with_n_cores.put_nowait(n_cores)
+            return await jvmpool.borrow_jvm()
 
     def return_jvm(self, jvm: JVM):
         jvm.reset()
-        self._jvms.add(jvm)
+        self._jvmpools_by_cores[jvm.n_cores].return_jvm(jvm)
 
-    async def recreate_jvm(self, jvm: JVM):
-        self._jvms.remove(jvm)
-        log.info(f'quarantined {jvm} and recreated a new jvm')
-        new_jvm = await JVM.create(jvm.index, jvm.n_cores, self)
-        self._jvms.add(new_jvm)
+    async def return_broken_jvm(self, jvm: JVM):
+        return await self._jvmpools_by_cores[jvm.n_cores].return_broken_jvm(jvm)
 
     @property
     def headers(self) -> Dict[str, str]:
@@ -2970,27 +3038,16 @@ class Worker:
     async def shutdown(self):
         log.info('Worker.shutdown')
         self._jvm_initializer_task.cancel()
-        try:
-            async with AsyncExitStack() as cleanup:
-                for jvm in self._jvms:
-                    cleanup.push_async_callback(jvm.kill)
-        finally:
-            try:
-                await self.task_manager.shutdown_and_wait()
-                log.info('shutdown task manager')
-            finally:
-                try:
-                    if self.file_store:
-                        await self.file_store.close()
-                        log.info('closed file store')
-                finally:
-                    try:
-                        if self.fs:
-                            await self.fs.close()
-                            log.info('closed worker file system')
-                    finally:
-                        await self.client_session.close()
-                        log.info('closed client session')
+        async with AsyncExitStack() as cleanup:
+            cleanup.push_async_callback(self.client_session.close)
+            if self.fs:
+                cleanup.push_async_callback(self.fs.close)
+            if self.file_store:
+                cleanup.push_async_callback(self.file_store.close)
+            for jvmqueue in self._jvmpools_by_cores.values():
+                while not jvmqueue.queue.empty():
+                    cleanup.push_async_callback(jvmqueue.queue.get_nowait().kill)
+            cleanup.push_async_callback(self.task_manager.shutdown_and_wait)
 
     async def run_job(self, job):
         try:
@@ -2999,11 +3056,6 @@ class Worker:
             raise
         except JVMCreationError:
             self.stop_event.set()
-        except IncompleteJVMCleanupError:
-            assert isinstance(job, JVMJob)
-            assert job.jvm is not None
-            await self.recreate_jvm(job.jvm)
-            log.exception(f'while running {job}, ignoring')
         except Exception as e:
             if not user_error(e):
                 log.exception(f'while running {job}, ignoring')
@@ -3170,7 +3222,7 @@ class Worker:
 
         app_runner = web.AppRunner(app, access_log_class=BatchWorkerAccessLogger)
         await app_runner.setup()
-        site = web.TCPSite(app_runner, '0.0.0.0', 5000)
+        site = web.TCPSite(app_runner, IP_ADDRESS, 5000)
         await site.start()
 
         try:
@@ -3194,7 +3246,7 @@ class Worker:
                         break
                     log.info(
                         f'n_jobs {len(self.jobs)} free_cores {self.cpu_sem.value / 1000} idle {idle_duration} '
-                        f'free worker data disk storage {self.data_disk_space_remaining.value}Gi'
+                        f'free worker data disk storage {self.data_disk_space_remaining}Gi'
                     )
         finally:
             self.active = False
@@ -3420,36 +3472,24 @@ async def async_main():
     await network_allocator.reserve()
 
     worker = Worker(httpx.client_session())
-    with aiomonitor.start_monitor(asyncio.get_event_loop(), locals=locals()):
-        try:
+    try:
+        async with AsyncExitStack() as cleanup:
+            cleanup.push_async_callback(docker.close)
+            cleanup.push_async_callback(network_allocator_task_manager.shutdown_and_wait)
+            cleanup.push_async_callback(CLOUD_WORKER_API.close)
+            cleanup.push_async_callback(worker.shutdown)
             await worker.run()
-        finally:
-            try:
-                await worker.shutdown()
-                log.info('worker shutdown', exc_info=True)
-            finally:
-                try:
-                    await CLOUD_WORKER_API.close()
-                finally:
-                    try:
-                        await network_allocator_task_manager.shutdown_and_wait()
-                    finally:
-                        try:
-                            await docker.close()
-                            log.info('docker closed')
-                        finally:
-                            asyncio.get_event_loop().set_debug(True)
-                            other_tasks = [t for t in asyncio.all_tasks() if t != asyncio.current_task()]
-                            if other_tasks:
-                                log.warning('Tasks immediately after docker close')
-                                dump_all_stacktraces()
-                                _, pending = await asyncio.wait(
-                                    other_tasks, timeout=10 * 60, return_when=asyncio.ALL_COMPLETED
-                                )
-                                for t in pending:
-                                    log.warning('Dangling task:')
-                                    t.print_stack()
-                                    t.cancel()
+    finally:
+        asyncio.get_event_loop().set_debug(True)
+        other_tasks = [t for t in asyncio.all_tasks() if t != asyncio.current_task()]
+        if other_tasks:
+            log.warning('Tasks immediately after docker close')
+            dump_all_stacktraces()
+            _, pending = await asyncio.wait(other_tasks, timeout=10 * 60, return_when=asyncio.ALL_COMPLETED)
+            for t in pending:
+                log.warning('Dangling task:')
+                t.print_stack()
+                t.cancel()
 
 
 loop = asyncio.get_event_loop()

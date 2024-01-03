@@ -2,15 +2,14 @@ package is.hail.expr.ir.agg
 
 import is.hail.annotations.{Region, RegionPool, RegionValue}
 import is.hail.asm4s.{HailClassLoader, _}
-import is.hail.backend.{ExecuteContext, HailTaskContext}
 import is.hail.backend.spark.SparkTaskContext
+import is.hail.backend.{ExecuteContext, HailTaskContext}
 import is.hail.expr.ir
 import is.hail.expr.ir._
 import is.hail.io.BufferSpec
-import is.hail.types.physical._
-import is.hail.types.physical.stypes.{EmitType, SType}
+import is.hail.types.physical.stypes.EmitType
 import is.hail.types.virtual._
-import is.hail.types.{BaseTypeWithRequiredness, TypeWithRequiredness, VirtualTypeWithReq}
+import is.hail.types.{TypeWithRequiredness, VirtualTypeWithReq}
 import is.hail.utils._
 import org.apache.spark.TaskContext
 
@@ -114,8 +113,8 @@ object PhysicalAggSig {
 
 class PhysicalAggSig(val op: AggOp, val state: AggStateSig, val nestedOps: Array[AggOp]) {
   val allOps: Array[AggOp] = nestedOps :+ op
-  def initOpTypes: IndexedSeq[Type] = Extract.getAgg(this).initOpTypes.toFastIndexedSeq
-  def seqOpTypes: IndexedSeq[Type] = Extract.getAgg(this).seqOpTypes.toFastIndexedSeq
+  def initOpTypes: IndexedSeq[Type] = Extract.getAgg(this).initOpTypes.toFastSeq
+  def seqOpTypes: IndexedSeq[Type] = Extract.getAgg(this).seqOpTypes.toFastSeq
   def emitResultType: EmitType = Extract.getAgg(this).resultEmitType
   def resultType: Type = emitResultType.virtualType
 }
@@ -156,8 +155,8 @@ class Aggs(original: IR, rewriteMap: Memo[IR], bindingNodesReferenced: Memo[Unit
       // only support let nodes here -- other binders like stream operators are undefined behavior
       RewriteTopDown.rewriteTopDown(original, {
         case ir if RefEquality(ir) == rewriteRoot =>
-          val Let(name, value, body) = ir
-          Let(name, value, f(rewriteMap.lookup(body)))
+          val Let(bindings, body) = ir
+          Let(bindings, f(rewriteMap.lookup(body)))
       }).asInstanceOf[IR]
     }
   }
@@ -190,8 +189,8 @@ class Aggs(original: IR, rewriteMap: Memo[IR], bindingNodesReferenced: Memo[Unit
   def deserialize(ctx: ExecuteContext, spec: BufferSpec): ((HailClassLoader, HailTaskContext, Region, Array[Byte]) => Long) = {
     val (_, f) = ir.CompileWithAggregators[AsmFunction1RegionUnit](ctx,
       states,
-      FastIndexedSeq(),
-      FastIndexedSeq(classInfo[Region]), UnitInfo,
+      FastSeq(),
+      FastSeq(classInfo[Region]), UnitInfo,
       ir.DeserializeAggs(0, 0, spec, states))
 
     val fsBc = ctx.fsBc;
@@ -207,8 +206,8 @@ class Aggs(original: IR, rewriteMap: Memo[IR], bindingNodesReferenced: Memo[Unit
   def serialize(ctx: ExecuteContext, spec: BufferSpec): (HailClassLoader, HailTaskContext, Region, Long) => Array[Byte] = {
     val (_, f) = ir.CompileWithAggregators[AsmFunction1RegionUnit](ctx,
       states,
-      FastIndexedSeq(),
-      FastIndexedSeq(classInfo[Region]), UnitInfo,
+      FastSeq(),
+      FastSeq(classInfo[Region]), UnitInfo,
       ir.SerializeAggs(0, 0, spec, states))
 
     val fsBc = ctx.fsBc;
@@ -235,8 +234,8 @@ class Aggs(original: IR, rewriteMap: Memo[IR], bindingNodesReferenced: Memo[Unit
   def combOpFSerializedFromRegionPool(ctx: ExecuteContext, spec: BufferSpec): (() => (RegionPool, HailClassLoader, HailTaskContext)) => ((Array[Byte], Array[Byte]) => Array[Byte]) = {
     val (_, f) = ir.CompileWithAggregators[AsmFunction1RegionUnit](ctx,
       states ++ states,
-      FastIndexedSeq(),
-      FastIndexedSeq(classInfo[Region]), UnitInfo,
+      FastSeq(),
+      FastSeq(classInfo[Region]), UnitInfo,
       Begin(FastSeq(
         ir.DeserializeAggs(0, 0, spec, states),
         ir.DeserializeAggs(nAggs, 1, spec, states),
@@ -265,7 +264,7 @@ class Aggs(original: IR, rewriteMap: Memo[IR], bindingNodesReferenced: Memo[Unit
     val fb = ir.EmitFunctionBuilder[AsmFunction4RegionLongRegionLongLong](
       ctx,
       "combOpF3",
-      FastIndexedSeq[ParamType](classInfo[Region], LongInfo, classInfo[Region], LongInfo),
+      FastSeq[ParamType](classInfo[Region], LongInfo, classInfo[Region], LongInfo),
       LongInfo)
 
     val leftAggRegion = fb.genFieldThisRef[Region]("agg_combine_left_top_region")
@@ -338,7 +337,7 @@ object Extract {
 
   def addLets(ir: IR, lets: Array[AggLet]): IR = {
     assert(lets.areDistinct())
-    lets.foldRight[IR](ir) { case (al, comb) => Let(al.name, al.value, comb) }
+    Let(lets.map(al => al.name -> al.value), ir)
   }
 
   def getResultType(aggSig: AggSignature): Type = aggSig match {
@@ -466,7 +465,7 @@ object Extract {
           val signature = PhysicalAggSig(op, foldStateSig)
           ab += InitOp(i, initOpArgs, signature) -> signature
           // So seqOp has to be able to reference accumName.
-          val seqWithLet = Let(accumName, ResultOp(i, signature), SeqOp(i, seqOpArgs, signature))
+          val seqWithLet = Let(FastSeq(accumName -> ResultOp(i, signature)), SeqOp(i, seqOpArgs, signature))
           seqBuilder += seqWithLet
           i
         })
@@ -476,7 +475,7 @@ object Extract {
         val newLet = new BoxedArrayBuilder[AggLet]()
         val transformed = this.extract(aggIR, env, bindingNodesReferenced, rewriteMap, ab, newSeq, newLet, newMemo, result, r, isScan)
 
-        seqBuilder += If(cond, addLets(Begin(newSeq.result()), newLet.result()), Begin(FastIndexedSeq[IR]()))
+        seqBuilder += If(cond, addLets(Begin(newSeq.result()), newLet.result()), Begin(FastSeq[IR]()))
         transformed
 
       case AggExplode(array, name, aggBody, _) =>
@@ -503,8 +502,8 @@ object Extract {
 
         val groupState = AggStateSig.grouped(key, pAggSigs.map(_.state), r)
         val groupSig = GroupedAggSig(groupState.kt, pAggSigs.toFastSeq)
-        ab += InitOp(i, FastIndexedSeq(Begin(initOps)), groupSig) -> groupSig
-        seqBuilder += SeqOp(i, FastIndexedSeq(key, Begin(newSeq.result().toFastIndexedSeq)), groupSig)
+        ab += InitOp(i, FastSeq(Begin(initOps)), groupSig) -> groupSig
+        seqBuilder += SeqOp(i, FastSeq(key, Begin(newSeq.result().toFastSeq)), groupSig)
 
         ToDict(StreamMap(ToStream(GetTupleElement(result, i)), newRef.name, MakeTuple.ordered(FastSeq(GetField(newRef, "key"), transformed))))
 
@@ -532,29 +531,26 @@ object Extract {
         ab += InitOp(i, knownLength.map(FastSeq(_)).getOrElse(FastSeq[IR]()) :+ Begin(initOps), checkSig) -> checkSig
         seqBuilder +=
           Let(
-            aRef.name, a,
-            Begin(FastIndexedSeq(
-              SeqOp(i, FastIndexedSeq(ArrayLen(aRef)), checkSig),
+            FastSeq(aRef.name -> a),
+            Begin(FastSeq(
+              SeqOp(i, FastSeq(ArrayLen(aRef)), checkSig),
               StreamFor(
                 StreamRange(I32(0), ArrayLen(aRef), I32(1)),
                 indexName,
                 Let(
-                  elementName,
-                  ArrayRef(aRef, Ref(indexName, TInt32)),
+                  FastSeq(elementName -> ArrayRef(aRef, Ref(indexName, TInt32))),
                   addLets(SeqOp(i,
-                    FastIndexedSeq(Ref(indexName, TInt32), Begin(newSeq.result().toFastIndexedSeq)),
+                    FastSeq(Ref(indexName, TInt32), Begin(newSeq.result().toFastSeq)),
                     eltSig), dependent))))))
 
         val rUID = Ref(genUID(), rt)
         Let(
-          rUID.name,
-          GetTupleElement(result, i),
+          FastSeq(rUID.name -> GetTupleElement(result, i)),
           ToArray(StreamMap(
             StreamRange(0, ArrayLen(rUID), 1),
             indexName,
             Let(
-              newRef.name,
-              ArrayRef(rUID, Ref(indexName, TInt32)),
+              FastSeq(newRef.name -> ArrayRef(rUID, Ref(indexName, TInt32))),
               transformed))))
 
       case x: StreamAgg =>

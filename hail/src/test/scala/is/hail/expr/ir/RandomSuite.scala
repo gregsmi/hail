@@ -3,13 +3,13 @@ package is.hail.expr.ir
 import is.hail.HailSuite
 import is.hail.asm4s._
 import is.hail.types.physical.stypes.concrete.{SCanonicalRNGStateSettable, SCanonicalRNGStateValue, SRNGState, SRNGStateStaticSizeValue}
-import is.hail.utils.FastIndexedSeq
+import is.hail.utils.FastSeq
 import org.apache.commons.math3.distribution.ChiSquaredDistribution
 import org.testng.annotations.Test
 
 class RandomSuite extends HailSuite {
   // from skein_golden_kat_short_internals.txt in the skein source
-  val threefryTestCases = FastIndexedSeq(
+  val threefryTestCases = FastSeq(
     (
       Array(0x0L, 0x0L, 0x0L, 0x0L),
       Array(0x0L, 0x0L),
@@ -64,7 +64,7 @@ class RandomSuite extends HailSuite {
 
       resArray
     }
-    f.result(ctx)(new HailClassLoader(getClass.getClassLoader))
+    f.result()(new HailClassLoader(getClass.getClassLoader))
   }
 
   def pmacEngineStagedStaticSize(staticID: Long, size: Int): AsmFunction1[Array[Long], ThreefryRandomEngine] = {
@@ -82,7 +82,7 @@ class RandomSuite extends HailSuite {
       state.copyIntoEngine(cb, engine)
       engine
     }
-    f.result(ctx)(new HailClassLoader(getClass.getClassLoader))
+    f.result()(new HailClassLoader(getClass.getClassLoader))
   }
 
   def pmacStagedDynSize(staticID: Long): AsmFunction1[Array[Long], Array[Long]] = {
@@ -93,7 +93,7 @@ class RandomSuite extends HailSuite {
       cb.assign(state, SCanonicalRNGStateValue(cb))
       val i = cb.newLocal[Int]("i", 0)
       val len = cb.memoize(message.length())
-      cb.forLoop({}, i < len, cb.assign(i, i + 1), {
+      cb.for_({}, i < len, cb.assign(i, i + 1), {
         cb.assign(state, state.splitDyn(cb, cb.memoize(message(i))))
       })
       cb.assign(state, state.splitStatic(cb, staticID))
@@ -107,7 +107,7 @@ class RandomSuite extends HailSuite {
 
       resArray
     }
-    f.result(ctx)(new HailClassLoader(getClass.getClassLoader))
+    f.result()(new HailClassLoader(getClass.getClassLoader))
   }
 
   def pmacEngineStagedDynSize(staticID: Long): AsmFunction1[Array[Long], ThreefryRandomEngine] = {
@@ -118,7 +118,7 @@ class RandomSuite extends HailSuite {
       cb.assign(state, SCanonicalRNGStateValue(cb))
       val i = cb.newLocal[Int]("i", 0)
       val len = cb.memoize(message.length())
-      cb.forLoop({}, i < len, cb.assign(i, i + 1), {
+      cb.for_({}, i < len, cb.assign(i, i + 1), {
         cb.assign(state, state.splitDyn(cb, cb.memoize(message(i))))
       })
       cb.assign(state, state.splitStatic(cb, staticID))
@@ -128,10 +128,10 @@ class RandomSuite extends HailSuite {
       state.copyIntoEngine(cb, engine)
       engine
     }
-    f.result(ctx)(new HailClassLoader(getClass.getClassLoader))
+    f.result()(new HailClassLoader(getClass.getClassLoader))
   }
 
-  val pmacTestCases = FastIndexedSeq(
+  val pmacTestCases = FastSeq(
     (Array[Long](), 0L),
     (Array[Long](100, 101), 10L),
     (Array[Long](100, 101, 102, 103), 20L),

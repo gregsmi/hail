@@ -504,7 +504,7 @@ class Batch:
             if err.code != 404:
                 raise
 
-    def create_job(self, image: str, command: List[str], **kwargs):
+    def create_job(self, image: str, command: List[str], **kwargs) -> Job:
         return self._create_job(
             {'command': command, 'image': image, 'type': 'docker'}, **kwargs
         )
@@ -535,7 +535,8 @@ class Batch:
                     network: Optional[str] = None,
                     unconfined: bool = False,
                     user_code: Optional[str] = None,
-                    regions: Optional[List[str]] = None):
+                    regions: Optional[List[str]] = None
+                    ) -> Job:
         self._job_idx += 1
 
         if parents is None:
@@ -776,6 +777,7 @@ class Batch:
               for bunch, size in zip(byte_job_specs_bunches, bunch_sizes)
               ],
             parallelism=6,
+            cancel_on_error=True,
         )
 
     async def _submit(self,
@@ -852,11 +854,11 @@ class HailExplicitTokenCredentials(CloudCredentials):
     def __init__(self, token: str):
         self._token = token
 
-    async def auth_headers(self) -> Dict[str, str]:
-        return {'Authorization': f'Bearer {self._token}'}
+    async def auth_headers_with_expiration(self) -> Tuple[Dict[str, str], Optional[float]]:
+        return {'Authorization': f'Bearer {self._token}'}, None
 
-    async def access_token(self) -> str:
-        return self._token
+    async def access_token_with_expiration(self) -> Tuple[str, Optional[float]]:
+        return self._token, None
 
     async def close(self):
         pass

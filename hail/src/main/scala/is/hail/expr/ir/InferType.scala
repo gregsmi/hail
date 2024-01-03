@@ -60,12 +60,14 @@ object InferType {
         assert(cond.typ == TBoolean)
         assert(cnsq.typ == altr.typ)
         cnsq.typ
-      case Let(name, value, body) =>
+      case Switch(_, default, _) =>
+        default.typ
+      case Let(_, body) =>
         body.typ
       case AggLet(name, value, body, _) =>
         body.typ
-      case TailLoop(_, _, body) =>
-        body.typ
+      case TailLoop(_, _, resultType, _) =>
+        resultType
       case Recur(_, _, typ) =>
         typ
       case ApplyBinaryPrimOp(op, l, r) =>
@@ -78,7 +80,7 @@ object InferType {
           case _: Compare => TInt32
           case _ => TBoolean
         }
-      case a: ApplyIR => a.explicitNode.typ
+      case a: ApplyIR => a.returnType
       case a: AbstractApplyNode[_] =>
         val typeArgs = a.typeArgs
         val argTypes = a.args.map(_.typ)
@@ -252,7 +254,7 @@ object InferType {
         }: _*)
       case SelectFields(old, fields) =>
         val tbs = tcoerce[TStruct](old.typ)
-        tbs.select(fields.toFastIndexedSeq)._1
+        tbs.select(fields.toFastSeq)._1
       case InsertFields(old, fields, fieldOrder) =>
         val tbs = tcoerce[TStruct](old.typ)
         val s = tbs.insertFields(fields.map(f => (f._1, f._2.typ)))
@@ -266,7 +268,7 @@ object InferType {
           throw new RuntimeException(s"$name not in $t")
         t.field(name).typ
       case MakeTuple(values) =>
-        TTuple(values.map { case (i, value) => TupleField(i, value.typ) }.toFastIndexedSeq)
+        TTuple(values.map { case (i, value) => TupleField(i, value.typ) }.toFastSeq)
       case GetTupleElement(o, idx) =>
         val t = tcoerce[TTuple](o.typ)
         val fd = t.fields(t.fieldIndex(idx)).typ

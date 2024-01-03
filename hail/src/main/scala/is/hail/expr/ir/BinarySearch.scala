@@ -4,7 +4,7 @@ import is.hail.asm4s._
 import is.hail.expr.ir.orderings.CodeOrdering
 import is.hail.types.physical.stypes._
 import is.hail.types.physical.stypes.interfaces._
-import is.hail.utils.FastIndexedSeq
+import is.hail.utils.FastSeq
 
 import scala.language.existentials
 
@@ -16,9 +16,9 @@ object BinarySearch {
     ): Comparator = new Comparator {
       def apply(cb: EmitCodeBuilder, elt: IEmitCode, ifLtNeedle: => Unit, ifGtNeedle: => Unit, ifNeither: => Unit): Unit = {
         val eltVal = cb.memoize(elt)
-        cb.ifx(ltNeedle(eltVal.loadI(cb)),
+        cb.if_(ltNeedle(eltVal.loadI(cb)),
           ifLtNeedle,
-          cb.ifx(gtNeedle(eltVal.loadI(cb)),
+          cb.if_(gtNeedle(eltVal.loadI(cb)),
             ifGtNeedle,
             ifNeither))
       }
@@ -27,9 +27,9 @@ object BinarySearch {
     def fromCompare(compare: IEmitCode => Value[Int]): Comparator = new Comparator {
       def apply(cb: EmitCodeBuilder, elt: IEmitCode, ifLtNeedle: => Unit, ifGtNeedle: => Unit, ifNeither: => Unit): Unit = {
         val c = cb.memoize(compare(elt))
-        cb.ifx(c < 0,
+        cb.if_(c < 0,
           ifLtNeedle,
-          cb.ifx(c > 0,
+          cb.if_(c > 0,
             ifGtNeedle,
             ifNeither))
       }
@@ -37,7 +37,7 @@ object BinarySearch {
 
     def fromPred(pred: IEmitCode => Code[Boolean]): Comparator = new Comparator {
       def apply(cb: EmitCodeBuilder, elt: IEmitCode, ifLtNeedle: => Unit, ifGtNeedle: => Unit, ifNeither: => Unit): Unit = {
-        cb.ifx(pred(elt), ifGtNeedle, ifLtNeedle)
+        cb.if_(pred(elt), ifGtNeedle, ifLtNeedle)
       }
     }
   }
@@ -228,7 +228,7 @@ object BinarySearch {
     // - left <= right
     // terminates b/c (right - left) strictly decreases each iteration
     cb.loop { recur =>
-      cb.ifx(left < right, {
+      cb.if_(left < right, {
         val mid = cb.memoize((left + right) >>> 1) // works even when sum overflows
         compare(cb, haystack.loadElement(cb, mid), {
           // range [start, mid] is < needle
@@ -292,7 +292,7 @@ class BinarySearch[C](mb: EmitMethodBuilder[C],
   getKey: (EmitCodeBuilder, EmitValue) => EmitValue,
   bound: String = "lower") {
   val containerElementType: EmitType = containerType.elementEmitType
-  val findElt = mb.genEmitMethod("findElt", FastIndexedSeq[ParamType](containerType.paramType, eltType.paramType), typeInfo[Int])
+  val findElt = mb.genEmitMethod("findElt", FastSeq[ParamType](containerType.paramType, eltType.paramType), typeInfo[Int])
 
   // Returns i in [0, n] such that a(j) < key for j in [0, i), and a(j) >= key
   // for j in [i, n)

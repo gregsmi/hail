@@ -33,7 +33,7 @@ class NDArraySumAggregator(ndVTyp: VirtualTypeWithReq) extends StagedAggregator 
 
   override protected def _seqOp(cb: EmitCodeBuilder, state: State, seq: Array[EmitCode]): Unit = {
     val Array(nextNDCode) = seq
-    val seqOpMethod = cb.emb.genEmitMethod("ndarray_sum_aggregator_seq_op", FastIndexedSeq(nextNDCode.emitParamType), CodeParamType(UnitInfo))
+    val seqOpMethod = cb.emb.genEmitMethod("ndarray_sum_aggregator_seq_op", FastSeq(nextNDCode.emitParamType), CodeParamType(UnitInfo))
 
     seqOpMethod.voidWithBuilder { cb =>
       val nextNDInput = seqOpMethod.getEmitParam(cb, 1)
@@ -86,7 +86,7 @@ class NDArraySumAggregator(ndVTyp: VirtualTypeWithReq) extends StagedAggregator 
 object NDArraySumAggregator {
 
   def addValues(cb: EmitCodeBuilder, region: Value[Region], leftNdValue: SNDArrayValue, rightNdValue: SNDArrayValue): Unit = {
-    cb.ifx(!leftNdValue.sameShape(cb, rightNdValue),
+    cb.if_(!leftNdValue.sameShape(cb, rightNdValue),
       cb += Code._fatal[Unit]("Can't sum ndarrays of different shapes."))
 
     leftNdValue.coiterateMutate(cb, region, (rightNdValue, "right")) {

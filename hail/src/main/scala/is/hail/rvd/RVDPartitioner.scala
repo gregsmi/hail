@@ -5,7 +5,7 @@ import is.hail.backend.{ExecuteContext, HailStateManager}
 import is.hail.expr.ir.Literal
 import is.hail.types.virtual._
 import is.hail.utils._
-import org.apache.commons.lang.builder.HashCodeBuilder
+import org.apache.commons.lang3.builder.HashCodeBuilder
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.Row
 import org.apache.spark.{Partitioner, SparkContext}
@@ -301,7 +301,7 @@ class RVDPartitioner(
 
   def partitionBoundsIRRepresentation: Literal = {
     Literal(TArray(RVDPartitioner.intervalIRRepresentation(kType)),
-      rangeBounds.map(i => RVDPartitioner.intervalToIRRepresentation(i, kType.size)).toFastIndexedSeq)
+      rangeBounds.map(i => RVDPartitioner.intervalToIRRepresentation(i, kType.size)).toFastSeq)
   }
 }
 
@@ -392,13 +392,13 @@ object RVDPartitioner {
     val step = (sortedKeys.length - 1).toDouble / nPartitions
     val partitionEdges = Array.tabulate(nPartitions - 1) { i =>
       IntervalEndpoint(sortedKeys(((i + 1) * step).toInt), 1)
-    }.toFastIndexedSeq
+    }.toFastSeq
 
     val interval = Interval(min, max, true, true)
     new RVDPartitioner(
       ctx.stateManager,
       typ.kType.virtualType,
-      FastIndexedSeq(interval)
+      FastSeq(interval)
     ).subdivide(partitionEdges, math.max(partitionKey - 1, 0))
   }
 

@@ -2,7 +2,7 @@ package is.hail.io.bgen
 
 import is.hail.annotations.Region
 import is.hail.asm4s._
-import is.hail.backend.{BroadcastValue, ExecuteContext}
+import is.hail.backend.ExecuteContext
 import is.hail.expr.ir.functions.{RegistryFunctions, StringFunctions}
 import is.hail.expr.ir.streams.StreamUtils
 import is.hail.expr.ir.{ArraySorter, EmitCode, EmitCodeBuilder, EmitFunctionBuilder, EmitSettable, IEmitCode, LowerMatrixIR, ParamType, StagedArrayBuilder, uuid4}
@@ -17,8 +17,8 @@ import is.hail.types.physical.stypes.interfaces.{NoBoxLongIterator, SBaseStructV
 import is.hail.types.physical.stypes.primitives.SInt64
 import is.hail.types.virtual._
 import is.hail.types.{RStruct, TableType, TypeWithRequiredness}
-import is.hail.utils.{BoxedArrayBuilder, CompressionUtils, FastIndexedSeq}
-import is.hail.variant.{Call2, ReferenceGenome}
+import is.hail.utils.{BoxedArrayBuilder, CompressionUtils, FastSeq}
+import is.hail.variant.Call2
 import org.objectweb.asm.Opcodes._
 
 object StagedBGENReader {
@@ -125,13 +125,13 @@ object StagedBGENReader {
       cb.assign(position, cbfis.invoke[Int]("readInt"))
 
 
-      cb.ifx(skipInvalidLoci, {
+      cb.if_(skipInvalidLoci, {
         rgBc.foreach { rg =>
-          cb.ifx(!rg.invoke[String, Int, Boolean]("isValidLocus", contigRecoded, position),
+          cb.if_(!rg.invoke[String, Int, Boolean]("isValidLocus", contigRecoded, position),
             {
               cb.assign(nAlleles, cbfis.invoke[Int]("readShort"))
               cb.assign(i, 0)
-              cb.whileLoop(i < nAlleles,
+              cb.while_(i < nAlleles,
                 {
                   cb += cbfis.invoke[Int, Unit]("readLengthAndSkipString", 4)
                   cb.assign(i, i + 1)
@@ -166,7 +166,7 @@ object StagedBGENReader {
 
       cb.assign(nAlleles, cbfis.invoke[Int]("readShort"))
 
-      cb.ifx(nAlleles.cne(2),
+      cb.if_(nAlleles.cne(2),
         cb._fatal("Only biallelic variants supported, found variant with ", nAlleles.toS, " alleles: ",
           contigRecoded, ":", position.toS))
 
@@ -174,7 +174,7 @@ object StagedBGENReader {
         val allelesType = SJavaArrayString(true)
 
         val a = cb.newLocal[Array[String]]("alleles", Code.newArray[String](nAlleles))
-        cb.whileLoop(i < nAlleles, {
+        cb.while_(i < nAlleles, {
           cb += a.update(i, cbfis.invoke[Int, String]("readLengthAndString", 4))
           cb.assign(i, i + 1)
         })
@@ -193,7 +193,7 @@ object StagedBGENReader {
         structFieldCodes += EmitCode.present(cb.emb, primitive(fileIdx))
 
       cb.assign(dataSize, cbfis.invoke[Int]("readInt"))
-      requestedType.fieldOption(LowerMatrixIR.entriesFieldName) match {
+      requestedType.selfField(LowerMatrixIR.entriesFieldName) match {
         case None =>
           cb += Code.toUnit(cbfis.invoke[Long, Long]("skipBytes", dataSize.toL))
         case Some(t) =>
@@ -210,20 +210,20 @@ object StagedBGENReader {
 
           val memoTyp = PCanonicalArray(entryType.setRequired(true), required = true)
 
-          val memoMB = emb.genEmitMethod("memoizeEntries", FastIndexedSeq[ParamType](), UnitInfo)
+          val memoMB = emb.genEmitMethod("memoizeEntries", FastSeq[ParamType](), UnitInfo)
           memoMB.voidWithBuilder { cb =>
 
             val partRegion = emb.partitionRegion
 
             val LnoOp = CodeLabel()
-            cb.ifx(alreadyMemoized, cb.goto(LnoOp))
+            cb.if_(alreadyMemoized, cb.goto(LnoOp))
 
             val (push, finish) = memoTyp.constructFromFunctions(cb, partRegion, 1 << 16, false)
 
             val d0 = cb.newLocal[Int]("memoize_entries_d0", 0)
-            cb.whileLoop(d0 < 256, {
+            cb.while_(d0 < 256, {
               val d1 = cb.newLocal[Int]("memoize_entries_d1", 0)
-              cb.whileLoop(d1 < 256, {
+              cb.while_(d1 < 256, {
                 val d2 = cb.newLocal[Int]("memoize_entries_d2", const(255) - d0 - d1)
 
                 val entryFieldCodes = new BoxedArrayBuilder[EmitCode]()
@@ -234,13 +234,13 @@ object StagedBGENReader {
                     val Lpresent = CodeLabel()
                     val value = cb.newLocal[Int]("bgen_gt_value")
 
-                    cb.ifx(d0 > d1,
-                      cb.ifx(d0 > d2,
+                    cb.if_(d0 > d1,
+                      cb.if_(d0 > d2,
                         {
                           cb.assign(value, c0)
                           cb.goto(Lpresent)
                         },
-                        cb.ifx(d2 > d0,
+                        cb.if_(d2 > d0,
                           {
                             cb.assign(value, c2)
                             cb.goto(Lpresent)
@@ -248,13 +248,13 @@ object StagedBGENReader {
                           // d0 == d2
                           cb.goto(Lmissing))),
                       // d0 <= d1
-                      cb.ifx(d2 > d1,
+                      cb.if_(d2 > d1,
                         {
                           cb.assign(value, c2)
                           cb.goto(Lpresent)
                         },
                         // d2 <= d1
-                        cb.ifx(d1.ceq(d0) || d1.ceq(d2),
+                        cb.if_(d1.ceq(d0) || d1.ceq(d2),
                           cb.goto(Lmissing),
                           {
                             cb.assign(value, c1)
@@ -300,12 +300,12 @@ object StagedBGENReader {
             cb.define(LnoOp)
           }
 
-          cb.ifx(compression ceq BgenSettings.UNCOMPRESSED, {
+          cb.if_(compression ceq BgenSettings.UNCOMPRESSED, {
             cb.assign(data, cbfis.invoke[Int, Array[Byte]]("readBytes", dataSize))
           }, {
             cb.assign(uncompressedSize, cbfis.invoke[Int]("readInt"))
             cb.assign(input, cbfis.invoke[Int, Array[Byte]]("readBytes", dataSize - 4))
-            cb.ifx(compression ceq BgenSettings.ZLIB_COMPRESSION, {
+            cb.if_(compression ceq BgenSettings.ZLIB_COMPRESSION, {
               cb.assign(data,
                 Code.invokeScalaObject2[Array[Byte], Int, Array[Byte]](
                   CompressionUtils.getClass, "decompressZlib", input, uncompressedSize))
@@ -318,7 +318,7 @@ object StagedBGENReader {
 
           cb.assign(reader, Code.newInstance[ByteArrayReader, Array[Byte]](data))
           cb.assign(nRow, reader.invoke[Int]("readInt"))
-          cb.ifx(nRow.cne(nSamples), cb._fatal(
+          cb.if_(nRow.cne(nSamples), cb._fatal(
             const("Row nSamples is not equal to header nSamples: ")
               .concat(nRow.toS)
               .concat(", ")
@@ -326,7 +326,7 @@ object StagedBGENReader {
           ))
 
           cb.assign(nAlleles2, reader.invoke[Int]("readShort"))
-          cb.ifx(nAlleles.cne(nAlleles2),
+          cb.if_(nAlleles.cne(nAlleles2),
             cb._fatal(const(
               """Value for 'nAlleles' in genotype probability data storage is
                 |not equal to value in variant identifying data. Expected""".stripMargin)
@@ -342,7 +342,7 @@ object StagedBGENReader {
           cb.assign(minPloidy, reader.invoke[Int]("read"))
           cb.assign(maxPloidy, reader.invoke[Int]("read"))
 
-          cb.ifx(minPloidy.cne(2) || maxPloidy.cne(2),
+          cb.if_(minPloidy.cne(2) || maxPloidy.cne(2),
             cb._fatal(const("Hail only supports diploid genotypes. Found min ploidy '")
               .concat(minPloidy.toS)
               .concat("' and max ploidy '")
@@ -350,9 +350,9 @@ object StagedBGENReader {
               .concat("'.")))
 
           cb.assign(i, 0)
-          cb.whileLoop(i < nSamples, {
+          cb.while_(i < nSamples, {
             cb.assign(ploidy, reader.invoke[Int]("read"))
-            cb.ifx((ploidy & 0x3f).cne(2),
+            cb.if_((ploidy & 0x3f).cne(2),
               cb._fatal(const("Ploidy value must equal to 2. Found ")
                 .concat(ploidy.toS)
                 .concat(".")))
@@ -360,25 +360,25 @@ object StagedBGENReader {
           })
 
           cb.assign(phase, reader.invoke[Int]("read"))
-          cb.ifx(phase.cne(0) && (phase.cne(1)),
+          cb.if_(phase.cne(0) && (phase.cne(1)),
             cb._fatal(const("Phase value must be 0 or 1. Found ")
               .concat(phase.toS)
               .concat(".")))
 
-          cb.ifx(phase.ceq(1), cb._fatal("Hail does not support phased genotypes in 'import_bgen'."))
+          cb.if_(phase.ceq(1), cb._fatal("Hail does not support phased genotypes in 'import_bgen'."))
 
           cb.assign(nBitsPerProb, reader.invoke[Int]("read"))
-          cb.ifx(nBitsPerProb < 1 || nBitsPerProb > 32,
+          cb.if_(nBitsPerProb < 1 || nBitsPerProb > 32,
             cb._fatal(const("nBits value must be between 1 and 32 inclusive. Found ")
               .concat(nBitsPerProb.toS)
               .concat(".")))
-          cb.ifx(nBitsPerProb.cne(8),
+          cb.if_(nBitsPerProb.cne(8),
             cb._fatal(const("Hail only supports 8-bit probabilities, found ")
               .concat(nBitsPerProb.toS)
               .concat(".")))
 
           cb.assign(nExpectedBytesProbs, nSamples * 2)
-          cb.ifx(reader.invoke[Int]("length").cne(nExpectedBytesProbs + nSamples.get + 10),
+          cb.if_(reader.invoke[Int]("length").cne(nExpectedBytesProbs + nSamples.get + 10),
             cb._fatal(const("Number of uncompressed bytes '")
               .concat(reader.invoke[Int]("length").toS)
               .concat("' does not match the expected size '")
@@ -390,12 +390,12 @@ object StagedBGENReader {
           val (pushElement, finish) = entriesArrayType.constructFromFunctions(cb, region, nSamples, deepCopy = false)
 
           cb.assign(i, 0)
-          cb.whileLoop(i < nSamples, {
+          cb.while_(i < nSamples, {
 
             val Lmissing = CodeLabel()
             val Lpresent = CodeLabel()
 
-            cb.ifx((data(i + 8) & 0x80).cne(0), cb.goto(Lmissing))
+            cb.if_((data(i + 8) & 0x80).cne(0), cb.goto(Lmissing))
             val dataOffset = cb.newLocal[Int]("bgen_add_entries_offset", (nSamples.get + const(10).get) + i * 2)
             val d0 = data(dataOffset) & 0xff
             val d1 = data(dataOffset + 1) & 0xff
@@ -441,7 +441,7 @@ object StagedBGENReader {
       val len = cb.memoize(indices.length())
       val boxed = cb.memoize(Code.newArray[AnyRef](len))
       val i = cb.newLocal[Int]("i", 0)
-      cb.whileLoop(i < len, {
+      cb.while_(i < len, {
 
         val r = index.queryIndex(cb, mb.partitionRegion, cb.memoize(indices(i))).loadField(cb, "key").get(cb)
         cb += boxed.update(i, StringFunctions.svalueToJavaValue(cb, mb.partitionRegion, r, safe = true))
@@ -486,7 +486,7 @@ object BGENFunctions extends RegistryFunctions {
         val header = cb.memoize(Code.invokeScalaObject3[HadoopFSDataBinaryReader, String, Long, BgenHeader](
           LoadBgen.getClass, "readState", cbfis, path, mb.getFS.invoke[String, Long]("getFileSize", path)))
 
-        cb.ifx(header.invoke[Int]("version") cne 2, {
+        cb.if_(header.invoke[Int]("version") cne 2, {
           cb._fatalWithError(err, "BGEN not version 2: ", path, ", version=", header.invoke[Int]("version").toS)
         })
         val nSamples = cb.memoize(header.invoke[Int]("nSamples"))
@@ -522,7 +522,7 @@ object BGENFunctions extends RegistryFunctions {
           "alleles" -> PCanonicalArray(PCanonicalString(true), true),
           "offset" -> PInt64Required)
         val bufferSct = SingleCodeType.fromSType(rowPType.sType)
-        val buffer = new StagedArrayBuilder(bufferSct, true, mb, 8)
+        val buffer = new StagedArrayBuilder(cb, bufferSct, true, 8)
         val currSize = cb.newLocal[Int]("currSize", 0)
 
         val spec = TypedCodecSpec(
@@ -543,7 +543,7 @@ object BGENFunctions extends RegistryFunctions {
           val ob = cb.newLocal[OutputBuffer]("currFile", spec.buildCodeOutputBuffer(mb.create(path)))
 
           val i = cb.newLocal[Int]("i", 0)
-          cb.whileLoop(i < currSize, {
+          cb.while_(i < currSize, {
             val k = bufferSct.loadToSValue(cb, cb.memoizeAny(buffer.apply(i), buffer.ti))
             spec.encodedType.buildEncoder(k.st, mb.ecb).apply(cb, k, ob)
             cb.assign(i, i + 1)
@@ -553,7 +553,7 @@ object BGENFunctions extends RegistryFunctions {
           cb += ob.invoke[Unit]("close")
 
           cb.assign(groupIndex, groupIndex + 1)
-          cb += buffer.clear
+          buffer.clear(cb)
           cb.assign(currSize, 0)
         }
 
@@ -561,27 +561,27 @@ object BGENFunctions extends RegistryFunctions {
 
         val nRead = cb.newLocal[Long]("nRead", 0L)
         val nWritten = cb.newLocal[Long]("nWritten", 0L)
-        cb.whileLoop(nRead < nVariants, {
+        cb.while_(nRead < nVariants, {
           StagedBGENReader.decodeRow(cb, er.region, cbfis, nSamples, fileIdx, compression, skipInvalidLoci, recoding,
             TStruct("locus" -> locType, "alleles" -> TArray(TString), "offset" -> TInt64), rg).toI(cb).consume(cb, {
             // do nothing if missing (invalid locus)
           }, { case row: SBaseStructValue =>
-            cb.ifx(currSize ceq bufferSize, {
+            cb.if_(currSize ceq bufferSize, {
               dumpBuffer(cb)
             })
-            cb += buffer.add(bufferSct.coerceSCode(cb, row, er.region, false).code)
+            buffer.add(cb, bufferSct.coerceSCode(cb, row, er.region, false).code)
             cb.assign(currSize, currSize + 1)
             cb.assign(nWritten, nWritten + 1)
           })
           cb.assign(nRead, nRead + 1)
         })
-        cb.ifx(currSize > 0, dumpBuffer(cb))
+        cb.if_(currSize > 0, dumpBuffer(cb))
 
 
         val ecb = cb.emb.genEmitClass[Unit]("buffer_stream")
         ecb.cb.addInterface(typeInfo[NoBoxLongIterator].iname)
 
-        val ctor = ecb.newEmitMethod("<init>", FastIndexedSeq[ParamType](typeInfo[String], typeInfo[Int]), UnitInfo)
+        val ctor = ecb.newEmitMethod("<init>", FastSeq[ParamType](typeInfo[String], typeInfo[Int]), UnitInfo)
         val ib = ecb.genFieldThisRef[InputBuffer]("ib")
         val iterSize = ecb.genFieldThisRef[Int]("size")
         val iterCurrIdx = ecb.genFieldThisRef[Int]("currIdx")
@@ -596,7 +596,7 @@ object BGENFunctions extends RegistryFunctions {
               "()V",
               false,
               UnitInfo,
-              FastIndexedSeq(lir.load(ctor.mb._this.asInstanceOf[LocalRef[_]].l))))
+              FastSeq(lir.load(ctor.mb._this.asInstanceOf[LocalRef[_]].l))))
           cb += new VCode(L, L, null)
 
           val path = cb.memoize(ctor.getCodeParam[String](1))
@@ -607,9 +607,9 @@ object BGENFunctions extends RegistryFunctions {
           cb.assign(iterCurrIdx, 0)
         }
 
-        val next = ecb.newEmitMethod("next", FastIndexedSeq[ParamType](), LongInfo)
+        val next = ecb.newEmitMethod("next", FastSeq[ParamType](), LongInfo)
 
-        val init = ecb.newEmitMethod("init", FastIndexedSeq[ParamType](typeInfo[Region], typeInfo[Region]), UnitInfo)
+        val init = ecb.newEmitMethod("init", FastSeq[ParamType](typeInfo[Region], typeInfo[Region]), UnitInfo)
         init.voidWithBuilder { cb =>
           val eltRegion = init.getCodeParam[Region](2)
 
@@ -618,7 +618,7 @@ object BGENFunctions extends RegistryFunctions {
 
         next.emitWithBuilder { cb =>
           val ret = cb.newLocal[Long]("ret")
-          cb.ifx(iterCurrIdx < iterSize, {
+          cb.if_(iterCurrIdx < iterSize, {
             cb.assign(ret, rowPType.store(cb, iterEltRegion,
               spec.encodedType.buildDecoder(rowPType.virtualType, ecb).apply(cb, iterEltRegion, ib), false))
             cb.assign(iterCurrIdx, iterCurrIdx + 1)
@@ -629,21 +629,21 @@ object BGENFunctions extends RegistryFunctions {
           ret
         }
 
-        val isEOS = ecb.newEmitMethod("eos", FastIndexedSeq[ParamType](), BooleanInfo)
+        val isEOS = ecb.newEmitMethod("eos", FastSeq[ParamType](), BooleanInfo)
         isEOS.emitWithBuilder[Boolean](cb => iterEOS)
 
-        val close = ecb.newEmitMethod("close", FastIndexedSeq[ParamType](), UnitInfo)
+        val close = ecb.newEmitMethod("close", FastSeq[ParamType](), UnitInfo)
         close.voidWithBuilder(cb => cb += ib.invoke[Unit]("close"))
 
         val iters = mb.genFieldThisRef[Array[NoBoxLongIterator]]("iters")
         cb.assign(iters, Code.newArray[NoBoxLongIterator](groupIndex))
         val i = cb.newLocal[Int]("i")
-        cb.whileLoop(i < groupIndex, {
-          cb += iters.update(i, coerce[NoBoxLongIterator](Code.newInstance(ecb.cb, ctor.mb, FastIndexedSeq(paths(i), fileSizes(i)))))
+        cb.while_(i < groupIndex, {
+          cb += iters.update(i, coerce[NoBoxLongIterator](Code.newInstance(ecb.cb, ctor.mb, FastSeq(paths(i), fileSizes(i)))))
           cb.assign(i, i + 1)
         })
 
-        val mergedStream = StreamUtils.multiMergeIterators(cb, Right(true), iters, FastIndexedSeq("locus", "alleles"), rowPType)
+        val mergedStream = StreamUtils.multiMergeIterators(cb, Right(true), iters, FastSeq("locus", "alleles"), rowPType)
 
         val iw = StagedIndexWriter.withDefaults(settings.indexKeyType, mb.ecb, annotationType = +PCanonicalStruct())
         iw.init(cb, idxPath, cb.memoize(Code.invokeScalaObject3[String, Map[String, String], Boolean, Map[String, Any]](
@@ -657,7 +657,7 @@ object BGENFunctions extends RegistryFunctions {
           cb.assign(nAdded, nAdded + 1)
           iw.add(cb, IEmitCode.present(cb, key), offset, IEmitCode.present(cb, SStackStruct.constructFromArgs(cb, er.region, TStruct())))
         }
-        cb.ifx(nWritten cne nAdded, cb._fatal(s"nWritten != nAdded - ", nWritten.toS, ", ", nAdded.toS))
+        cb.if_(nWritten cne nAdded, cb._fatal(s"nWritten != nAdded - ", nWritten.toS, ", ", nAdded.toS))
 
         iw.close(cb)
         cb += cbfis.invoke[Unit]("close")

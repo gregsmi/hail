@@ -39,10 +39,10 @@ object BlockMatrixIR {
 
   def matrixShapeToTensorShape(nRows: Long,  nCols: Long): (IndexedSeq[Long], Boolean) = {
     (nRows, nCols) match {
-      case (1, 1) => (FastIndexedSeq(), false)
-      case (_, 1) => (FastIndexedSeq(nRows), false)
-      case (1, _) => (FastIndexedSeq(nCols), true)
-      case _ => (FastIndexedSeq(nRows, nCols), false)
+      case (1, 1) => (FastSeq(), false)
+      case (_, 1) => (FastSeq(nRows), false)
+      case (1, _) => (FastSeq(nCols), true)
+      case _ => (FastSeq(nRows, nCols), false)
     }
   }
 
@@ -68,6 +68,8 @@ abstract sealed class BlockMatrixIR extends BaseIR {
   def copy(newChildren: IndexedSeq[BaseIR]): BlockMatrixIR
 
   def blockCostIsLinear: Boolean
+
+  def typecheck(): Unit = {}
 }
 
 case class BlockMatrixRead(reader: BlockMatrixReader) extends BlockMatrixIR {
@@ -174,7 +176,7 @@ class BlockMatrixNativeReader(
     }
 
     BlockMatrixStage2(
-      FastIndexedSeq(),
+      FastSeq(),
       fullType,
       contexts,
       blockIR)
@@ -223,7 +225,7 @@ case class BlockMatrixBinaryReader(path: String, shape: IndexedSeq[Long], blockS
 
     def blockIR(ctx: IR) = ctx
 
-    BlockMatrixStage2(FastIndexedSeq(), typ, contexts, blockIR)
+    BlockMatrixStage2(FastSeq(), typ, contexts, blockIR)
   }
 }
 
@@ -246,8 +248,11 @@ case class BlockMatrixPersistReader(id: String, typ: BlockMatrixType) extends Bl
 }
 
 case class BlockMatrixMap(child: BlockMatrixIR, eltName: String, f: IR, needsDense: Boolean) extends BlockMatrixIR {
-  override lazy val typ: BlockMatrixType = child.typ
-  assert(!needsDense || !typ.isSparse)
+  override def typecheck(): Unit = {
+    assert(!(needsDense && child.typ.isSparse))
+  }
+
+  override def typ: BlockMatrixType = child.typ
 
   lazy val childrenSeq: IndexedSeq[BaseIR] = Array(child, f)
 
@@ -292,7 +297,7 @@ case class BlockMatrixMap(child: BlockMatrixIR, eltName: String, f: IR, needsDen
 
 
     val (name, breezeF): (String, DenseMatrix[Double] => DenseMatrix[Double]) = f match {
-      case ApplyUnaryPrimOp(Negate(), _) => ("negate", BlockMatrix.negationOp)
+      case ApplyUnaryPrimOp(Negate, _) => ("negate", BlockMatrix.negationOp)
       case Apply("abs", _, _, _, _) => ("abs", numerics.abs(_))
       case Apply("log", _, _, _, _) => ("log", numerics.log(_))
       case Apply("sqrt", _, _, _,_) => ("sqrt", numerics.sqrt(_))
@@ -348,7 +353,7 @@ case object UnionBlocks extends SparsityStrategy {
   def exists(leftBlock: Boolean, rightBlock: Boolean): Boolean = leftBlock || rightBlock
   def mergeSparsity(left: BlockMatrixSparsity, right: BlockMatrixSparsity): BlockMatrixSparsity = {
     if (left.isSparse && right.isSparse) {
-      BlockMatrixSparsity(left.blockSet.union(right.blockSet).toFastIndexedSeq)
+      BlockMatrixSparsity(left.blockSet.union(right.blockSet).toFastSeq)
     } else BlockMatrixSparsity.dense
   }
 }
@@ -357,7 +362,7 @@ case object IntersectionBlocks extends SparsityStrategy {
   def mergeSparsity(left: BlockMatrixSparsity, right: BlockMatrixSparsity): BlockMatrixSparsity = {
     if (right.isSparse) {
       if (left.isSparse)
-        BlockMatrixSparsity(left.blockSet.intersect(right.blockSet).toFastIndexedSeq)
+        BlockMatrixSparsity(left.blockSet.intersect(right.blockSet).toFastSeq)
       else right
     } else left
   }
@@ -370,11 +375,19 @@ case object NeedsDense extends SparsityStrategy {
   }
 }
 
-case class BlockMatrixMap2(left: BlockMatrixIR, right: BlockMatrixIR, leftName: String, rightName: String, f: IR, sparsityStrategy: SparsityStrategy) extends BlockMatrixIR {
-  assert(
-    left.typ.nRows == right.typ.nRows &&
-    left.typ.nCols == right.typ.nCols &&
-    left.typ.blockSize == right.typ.blockSize)
+case class BlockMatrixMap2(
+  left: BlockMatrixIR,
+  right: BlockMatrixIR,
+  leftName: String,
+  rightName: String,
+  f: IR,
+  sparsityStrategy: SparsityStrategy
+) extends BlockMatrixIR {
+  override def typecheck(): Unit = {
+    assert(left.typ.nRows == right.typ.nRows)
+    assert(left.typ.nCols == right.typ.nCols)
+    assert(left.typ.blockSize == right.typ.blockSize)
+  }
 
   override lazy val typ: BlockMatrixType = left.typ.copy(sparsity = sparsityStrategy.mergeSparsity(left.typ.sparsity, right.typ.sparsity))
 
@@ -477,7 +490,6 @@ case class BlockMatrixMap2(left: BlockMatrixIR, right: BlockMatrixIR, leftName: 
 }
 
 case class BlockMatrixDot(left: BlockMatrixIR, right: BlockMatrixIR) extends BlockMatrixIR {
-
   override lazy val typ: BlockMatrixType = {
     val blockSize = left.typ.blockSize
     val (lRows, lCols) = BlockMatrixIR.tensorShapeToMatrixShape(left)
@@ -531,20 +543,24 @@ case class BlockMatrixBroadcast(
   child: BlockMatrixIR,
   inIndexExpr: IndexedSeq[Int],
   shape: IndexedSeq[Long],
-  blockSize: Int) extends BlockMatrixIR {
+  blockSize: Int
+) extends BlockMatrixIR {
 
   val blockCostIsLinear: Boolean = child.blockCostIsLinear
 
   assert(shape.length == 2)
   assert(inIndexExpr.length <= 2 && inIndexExpr.forall(x => x == 0 || x == 1))
 
-  val (nRows, nCols) = BlockMatrixIR.tensorShapeToMatrixShape(child)
-  val childMatrixShape = IndexedSeq(nRows, nCols)
-  assert(inIndexExpr.zipWithIndex.forall({ case (out: Int, in: Int) =>
-    !child.typ.shape.contains(in) || childMatrixShape(in) == shape(out)
-  }))
+  override def typecheck(): Unit = {
+    val (nRows, nCols) = BlockMatrixIR.tensorShapeToMatrixShape(child)
+    val childMatrixShape = IndexedSeq(nRows, nCols)
 
-  override val typ: BlockMatrixType = {
+    assert(inIndexExpr.zipWithIndex.forall({ case (out: Int, in: Int) =>
+      !child.typ.shape.contains(in) || childMatrixShape(in) == shape(out)
+    }))
+  }
+
+  override lazy val typ: BlockMatrixType = {
     val (tensorShape, isRowVector) = BlockMatrixIR.matrixShapeToTensorShape(shape(0), shape(1))
     val nRowBlocks = BlockMatrixType.numBlocks(shape(0), blockSize)
     val nColBlocks = BlockMatrixType.numBlocks(shape(1), blockSize)
@@ -626,17 +642,18 @@ case class BlockMatrixBroadcast(
 
 case class BlockMatrixAgg(
   child: BlockMatrixIR,
-  axesToSumOut: IndexedSeq[Int]) extends BlockMatrixIR {
+  axesToSumOut: IndexedSeq[Int]
+) extends BlockMatrixIR {
 
   val blockCostIsLinear: Boolean = child.blockCostIsLinear
 
-  assert(axesToSumOut.length > 0)
+  assert(axesToSumOut.nonEmpty)
 
   override lazy val typ: BlockMatrixType = {
     val matrixShape = BlockMatrixIR.tensorShapeToMatrixShape(child)
     val matrixShapeArr = Array[Long](matrixShape._1, matrixShape._2)
-    val shape = IndexedSeq(0, 1).filter(i => !axesToSumOut.contains(i)).map({ i: Int => matrixShapeArr(i) }).toFastIndexedSeq
-    val isRowVector = axesToSumOut == FastIndexedSeq(0)
+    val shape = IndexedSeq(0, 1).filter(i => !axesToSumOut.contains(i)).map({ i: Int => matrixShapeArr(i) }).toFastSeq
+    val isRowVector = axesToSumOut == FastSeq(0)
 
     val sparsity = if (child.typ.isSparse) {
       axesToSumOut match {
@@ -675,21 +692,22 @@ case class BlockMatrixAgg(
 
 case class BlockMatrixFilter(
   child: BlockMatrixIR,
-  indices: Array[Array[Long]]) extends BlockMatrixIR {
+  indices: Array[Array[Long]]
+) extends BlockMatrixIR {
 
   assert(indices.length == 2)
 
   val blockCostIsLinear: Boolean = child.blockCostIsLinear
   private[this] val Array(keepRow, keepCol) = indices
-  private[this] val blockSize = child.typ.blockSize
-
-  lazy val keepRowPartitioned: Array[Array[Long]] = keepRow.grouped(blockSize).toArray
-  lazy val keepColPartitioned: Array[Array[Long]] = keepCol.grouped(blockSize).toArray
-
-  lazy val rowBlockDependents: Array[Array[Int]] = child.typ.rowBlockDependents(keepRowPartitioned)
-  lazy val colBlockDependents: Array[Array[Int]] = child.typ.colBlockDependents(keepColPartitioned)
 
   override lazy val typ: BlockMatrixType = {
+    val blockSize = child.typ.blockSize
+    val keepRowPartitioned: Array[Array[Long]] = keepRow.grouped(blockSize).toArray
+    val keepColPartitioned: Array[Array[Long]] = keepCol.grouped(blockSize).toArray
+
+    val rowBlockDependents: Array[Array[Int]] = child.typ.rowBlockDependents(keepRowPartitioned)
+    val colBlockDependents: Array[Array[Int]] = child.typ.colBlockDependents(keepColPartitioned)
+
     val childTensorShape = child.typ.shape
     val childMatrixShape = (childTensorShape, child.typ.isRowVector) match {
       case (IndexedSeq(vectorLength), true) => IndexedSeq(1, vectorLength)
@@ -701,7 +719,7 @@ case class BlockMatrixFilter(
       if (dim.isEmpty) childMatrixShape(i) else dim.length
     })
 
-    val IndexedSeq(nRows: Long, nCols: Long) = matrixShape.toFastIndexedSeq
+    val IndexedSeq(nRows: Long, nCols: Long) = matrixShape.toFastSeq
     val (tensorShape, isRowVector) = BlockMatrixIR.matrixShapeToTensorShape(nRows, nCols)
 
     val sparsity = child.typ.sparsity.condense(rowBlockDependents -> colBlockDependents)
@@ -734,7 +752,7 @@ case class BlockMatrixDensify(child: BlockMatrixIR) extends BlockMatrixIR {
 
   def blockCostIsLinear: Boolean = child.blockCostIsLinear
 
-  val childrenSeq: IndexedSeq[BaseIR] = FastIndexedSeq(child)
+  val childrenSeq: IndexedSeq[BaseIR] = FastSeq(child)
 
   def copy(newChildren: IndexedSeq[BaseIR]): BlockMatrixIR = {
     val IndexedSeq(newChild: BlockMatrixIR) = newChildren
@@ -918,7 +936,11 @@ case class BlockMatrixSlice(child: BlockMatrixIR, slices: IndexedSeq[IndexedSeq[
 case class ValueToBlockMatrix(
   child: IR,
   shape: IndexedSeq[Long],
-  blockSize: Int) extends BlockMatrixIR {
+  blockSize: Int
+) extends BlockMatrixIR {
+  override def typecheck(): Unit = {
+    assert(child.typ.isInstanceOf[TArray] || child.typ.isInstanceOf[TNDArray] ||  child.typ == TFloat64)
+  }
 
   assert(shape.length == 2)
 
@@ -984,7 +1006,7 @@ case class BlockMatrixRandom(
 }
 
 case class RelationalLetBlockMatrix(name: String, value: IR, body: BlockMatrixIR) extends BlockMatrixIR {
-  override lazy val typ: BlockMatrixType = body.typ
+  override def typ: BlockMatrixType = body.typ
 
   def childrenSeq: IndexedSeq[BaseIR] = Array(value, body)
 

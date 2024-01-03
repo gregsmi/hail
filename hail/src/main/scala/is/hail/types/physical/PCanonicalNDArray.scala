@@ -189,7 +189,7 @@ final case class PCanonicalNDArray(elementType: PType, nDims: Int, required: Boo
 
     val cacheKey = ("constructByCopyingArray", this, dataCode.st)
     val mb = cb.emb.ecb.getOrGenEmitMethod("pcndarray_construct_by_copying_array", cacheKey,
-      FastIndexedSeq[ParamType](classInfo[Region], dataCode.st.paramType) ++ (0 until 2 * nDims).map(_ => CodeParamType(LongInfo)),
+      FastSeq[ParamType](classInfo[Region], dataCode.st.paramType) ++ (0 until 2 * nDims).map(_ => CodeParamType(LongInfo)),
       sType.paramType) { mb =>
       mb.emitSCode { cb =>
 
@@ -205,7 +205,7 @@ final case class PCanonicalNDArray(elementType: PType, nDims: Int, required: Boo
             cb += Region.copyFrom(dataValue.asInstanceOf[SIndexablePointerValue].elementsAddress, result.firstDataAddress, dataValue.loadLength().toL * elementType.byteSize)
           case _ =>
             val loopCtr = cb.newLocal[Long]("pcanonical_ndarray_construct_by_copying_loop_idx")
-            cb.forLoop(cb.assign(loopCtr, 0L), loopCtr < dataValue.loadLength().toL, cb.assign(loopCtr, loopCtr + 1L), {
+            cb.for_(cb.assign(loopCtr, 0L), loopCtr < dataValue.loadLength().toL, cb.assign(loopCtr, loopCtr + 1L), {
               elementType.storeAtAddress(cb, result.firstDataAddress + (loopCtr * elementType.byteSize), region, dataValue.loadElement(cb, loopCtr.toI).get(cb, "NDArray elements cannot be missing"), true)
             })
         }
@@ -219,7 +219,7 @@ final case class PCanonicalNDArray(elementType: PType, nDims: Int, required: Boo
       case s => SizeValueDyn(s)
     }
 
-    cb.invokeSCode(mb, FastIndexedSeq[Param](region, SCodeParam(dataCode)) ++ (newShape.map(CodeParam(_)) ++ strides.map(CodeParam(_))): _*)
+    cb.invokeSCode(mb, FastSeq[Param](region, SCodeParam(dataCode)) ++ (newShape.map(CodeParam(_)) ++ strides.map(CodeParam(_))): _*)
       .asNDArray
       .coerceToShape(cb, newShape)
   }
@@ -268,7 +268,7 @@ final case class PCanonicalNDArray(elementType: PType, nDims: Int, required: Boo
   ): SNDArrayValue = {
     val oldDataAddr = toBeCopied.firstDataAddress
     val numDataBytes = cb.newLocal("constructByActuallyCopyingData_numDataBytes", Region.getSharedChunkByteSize(oldDataAddr))
-    cb.ifx(numDataBytes < 0L, cb._fatal("numDataBytes was ", numDataBytes.toS))
+    cb.if_(numDataBytes < 0L, cb._fatal("numDataBytes was ", numDataBytes.toS))
     val newDataAddr = cb.newLocal("constructByActuallyCopyingData_newDataAddr", region.allocateSharedChunk(numDataBytes))
     cb += Region.copyFrom(oldDataAddr, newDataAddr, numDataBytes)
     constructByCopyingDataPointer(

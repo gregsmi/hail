@@ -4,12 +4,12 @@ import is.hail.asm4s._
 import is.hail.expr.Nat
 import is.hail.expr.ir.{EmitCodeBuilder, IEmitCode}
 import is.hail.types.physical.stypes._
-import is.hail.types.physical.stypes.concrete.{SIndexablePointer, SNDArrayPointer, SRNGStateStaticSizeValue, SRNGStateValue}
+import is.hail.types.physical.stypes.concrete.{SIndexablePointer, SNDArrayPointer, SRNGStateValue}
 import is.hail.types.physical.stypes.interfaces._
 import is.hail.types.physical.stypes.primitives._
-import is.hail.types.physical.{PBoolean, PCanonicalArray, PCanonicalNDArray, PFloat64, PInt32, PType}
+import is.hail.types.physical.{PCanonicalArray, PCanonicalNDArray, PFloat64, PInt32}
 import is.hail.types.virtual._
-import is.hail.utils.FastIndexedSeq
+import is.hail.utils.FastSeq
 import net.sourceforge.jdistlib.rng.MersenneTwister
 import net.sourceforge.jdistlib.{Beta, Gamma, HyperGeometric, Poisson}
 
@@ -114,7 +114,7 @@ object RandomSeededFunctions extends RegistryFunctions {
     registerSCode5("rand_unif_nd", TRNGState, TInt64, TInt64, TFloat64, TFloat64, TNDArray(TFloat64, Nat(2)), {
       case (_: Type, _: SType, _: SType, _: SType, _: SType, _: SType) => PCanonicalNDArray(PFloat64(true), 2, true).sType
     }) { case (r, cb, rt: SNDArrayPointer, rngState: SRNGStateValue, nRows: SInt64Value, nCols: SInt64Value, min, max, errorID) =>
-      val result = rt.pType.constructUninitialized(FastIndexedSeq(SizeValueDyn(nRows.value), SizeValueDyn(nCols.value)), cb, r.region)
+      val result = rt.pType.constructUninitialized(FastSeq(SizeValueDyn(nRows.value), SizeValueDyn(nCols.value)), cb, r.region)
       val rng = cb.emb.getThreefryRNG()
       rngState.copyIntoEngine(cb, rng)
       result.coiterateMutate(cb, r.region) { _ =>
@@ -148,7 +148,7 @@ object RandomSeededFunctions extends RegistryFunctions {
     registerSCode5("rand_norm_nd", TRNGState, TInt64, TInt64, TFloat64, TFloat64, TNDArray(TFloat64, Nat(2)), {
       case (_: Type, _: SType, _: SType, _: SType, _: SType, _: SType) => PCanonicalNDArray(PFloat64(true), 2, true).sType
     }) { case (r, cb, rt: SNDArrayPointer, rngState: SRNGStateValue, nRows: SInt64Value, nCols: SInt64Value, mean, sd, errorID) =>
-      val result = rt.pType.constructUninitialized(FastIndexedSeq(SizeValueDyn(nRows.value), SizeValueDyn(nCols.value)), cb, r.region)
+      val result = rt.pType.constructUninitialized(FastSeq(SizeValueDyn(nRows.value), SizeValueDyn(nCols.value)), cb, r.region)
       val rng = cb.emb.getThreefryRNG()
       rngState.copyIntoEngine(cb, rng)
       result.coiterateMutate(cb, r.region) { _ =>
@@ -206,7 +206,7 @@ object RandomSeededFunctions extends RegistryFunctions {
       val rng = cb.emb.getThreefryRNG()
       rngState.copyIntoEngine(cb, rng)
       val value = cb.newLocal[Double]("value", rng.invoke[Double, Double, Double]("rbeta", a.value, b.value))
-      cb.whileLoop(value < min.value || value > max.value, {
+      cb.while_(value < min.value || value > max.value, {
         cb.assign(value, rng.invoke[Double, Double, Double]("rbeta", a.value, b.value))
       })
       primitive(value)
@@ -226,7 +226,7 @@ object RandomSeededFunctions extends RegistryFunctions {
       val len = weights.loadLength()
       val i = cb.newLocal[Int]("i", 0)
       val s = cb.newLocal[Double]("sum", 0.0)
-      cb.whileLoop(i < len, {
+      cb.while_(i < len, {
         cb.assign(s, s + weights.loadElement(cb, i).get(cb, "rand_cat requires all elements of input array to be present").asFloat64.value)
         cb.assign(i, i + 1)
       })
@@ -235,7 +235,7 @@ object RandomSeededFunctions extends RegistryFunctions {
       val elt = cb.newLocal[Double]("elt")
       cb.loop { start =>
         cb.assign(elt, weights.loadElement(cb, i).get(cb, "rand_cat requires all elements of input array to be present").asFloat64.value)
-        cb.ifx(r > elt && i < len, {
+        cb.if_(r > elt && i < len, {
           cb.assign(r, r - elt)
           cb.assign(i, i + 1)
           cb.goto(start)
@@ -253,11 +253,11 @@ object RandomSeededFunctions extends RegistryFunctions {
       val totalNumberOfRecords = cb.newLocal[Int]("scnspp_total_number_of_records", 0)
       val resultSize: Value[Int] = partitionCounts.loadLength()
       val i = cb.newLocal[Int]("scnspp_index", 0)
-      cb.forLoop(cb.assign(i, 0), i < resultSize, cb.assign(i, i + 1), {
+      cb.for_(cb.assign(i, 0), i < resultSize, cb.assign(i, i + 1), {
         cb.assign(totalNumberOfRecords, totalNumberOfRecords + partitionCounts.loadElement(cb, i).get(cb).asInt32.value)
       })
 
-      cb.ifx(initalNumSamplesToSelect.value > totalNumberOfRecords, cb._fatal("Requested selection of ", initalNumSamplesToSelect.value.toS,
+      cb.if_(initalNumSamplesToSelect.value > totalNumberOfRecords, cb._fatal("Requested selection of ", initalNumSamplesToSelect.value.toS,
         " samples from ", totalNumberOfRecords.toS, " records"))
 
       val successStatesRemaining = cb.newLocal[Int]("scnspp_success", initalNumSamplesToSelect.value)
@@ -266,7 +266,7 @@ object RandomSeededFunctions extends RegistryFunctions {
       val arrayRt = rt.asInstanceOf[SIndexablePointer]
       val (push, finish) = arrayRt.pType.asInstanceOf[PCanonicalArray].constructFromFunctions(cb, r.region, resultSize, false)
 
-      cb.forLoop(cb.assign(i, 0), i < resultSize, cb.assign(i, i + 1), {
+      cb.for_(cb.assign(i, 0), i < resultSize, cb.assign(i, i + 1), {
         val numSuccesses = cb.memoize(rng.invoke[Double, Double, Double, Double]("rhyper",
           successStatesRemaining.toD, failureStatesRemaining.toD, partitionCounts.loadElement(cb, i).get(cb).asInt32.value.toD).toI)
         cb.assign(successStatesRemaining, successStatesRemaining - numSuccesses)

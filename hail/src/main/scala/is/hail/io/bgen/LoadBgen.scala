@@ -5,7 +5,7 @@ import is.hail.asm4s._
 import is.hail.backend.ExecuteContext
 import is.hail.expr.ir.lowering.{TableStage, TableStageDependency}
 import is.hail.expr.ir.streams.StreamProducer
-import is.hail.expr.ir.{EmitCode, EmitCodeBuilder, EmitMethodBuilder, EmitSettable, EmitValue, IEmitCode, IR, IRParserEnvironment, Literal, LowerMatrixIR, MakeStruct, MatrixHybridReader, MatrixReader, PartitionNativeIntervalReader, PartitionReader, ReadPartition, Ref, StreamTake, TableExecuteIntermediate, TableNativeReader, TableReader, TableValue, ToStream}
+import is.hail.expr.ir.{EmitCode, EmitCodeBuilder, EmitMethodBuilder, EmitSettable, EmitValue, IEmitCode, IR, IRParserEnvironment, Literal, LowerMatrixIR, MakeStruct, MatrixHybridReader, MatrixReader, PartitionNativeIntervalReader, PartitionReader, ReadPartition, Ref, TableNativeReader, TableReader, ToStream}
 import is.hail.io._
 import is.hail.io.fs.{FS, FileListEntry, SeekableDataInputStream}
 import is.hail.io.index.{IndexReader, StagedIndexReader}
@@ -17,7 +17,6 @@ import is.hail.types.physical.stypes.concrete.{SJavaArrayString, SStackStruct}
 import is.hail.types.physical.stypes.interfaces._
 import is.hail.types.virtual._
 import is.hail.utils._
-import is.hail.variant._
 import org.apache.spark.sql.Row
 import org.json4s.JsonAST.{JArray, JInt, JNull, JString}
 import org.json4s.{DefaultFormats, Extraction, Formats, JObject, JValue}
@@ -109,7 +108,7 @@ object LoadBgen {
     val nVariants = is.readInt()
     val nSamples = is.readInt()
 
-    val magicNumber = is.readBytes(4).map(_.toInt).toFastIndexedSeq
+    val magicNumber = is.readBytes(4).map(_.toInt).toFastSeq
 
     if (magicNumber != FastSeq(0, 0, 0, 0) && magicNumber != FastSeq(98, 103, 101, 110))
       fatal(s"expected magic number [0000] or [bgen], got [${ magicNumber.mkString }]")
@@ -480,7 +479,7 @@ class MatrixBGENReader(
     VirtualTypeWithReq(PType.canonical(requestedType.globalType, required = true))
 
   override def lowerGlobals(ctx: ExecuteContext, requestedGlobalType: TStruct): IR = {
-    requestedGlobalType.fieldOption(LowerMatrixIR.colsFieldName) match {
+    requestedGlobalType.selfField(LowerMatrixIR.colsFieldName) match {
       case Some(f) =>
         val ta = f.typ.asInstanceOf[TArray]
         MakeStruct(FastSeq((LowerMatrixIR.colsFieldName, {
@@ -543,7 +542,7 @@ class MatrixBGENReader(
           globals = globals,
           partitioner = partitioner,
           dependency = TableStageDependency.none,
-          contexts = ToStream(Literal(TArray(reader.contextType), contexts.result().toFastIndexedSeq)),
+          contexts = ToStream(Literal(TArray(reader.contextType), contexts.result().toFastSeq)),
           (ref: Ref) => ReadPartition(ref, requestedType.rowType, reader)
         )
 
@@ -568,7 +567,7 @@ class MatrixBGENReader(
           globals = globals,
           partitioner = partitioner,
           dependency = TableStageDependency.none,
-          contexts = ToStream(Literal(TArray(reader.contextType), contexts.result().toFastIndexedSeq)),
+          contexts = ToStream(Literal(TArray(reader.contextType), contexts.result().toFastSeq)),
           (ref: Ref) => ReadPartition(ref, requestedType.rowType, reader)
         )
     }
@@ -627,7 +626,7 @@ case class BgenPartitionReaderWithVariantFilter(fileMetadata: Array[BgenFileMeta
               vs.initialize(cb, outerRegion)
 
               cb.assign(fileIdx, context.loadField(cb, "file_index").get(cb).asInt.value)
-              val metadata = cb.memoize(mb.getObject[IndexedSeq[BgenFileMetadata]](fileMetadata.toFastIndexedSeq)
+              val metadata = cb.memoize(mb.getObject[IndexedSeq[BgenFileMetadata]](fileMetadata.toFastSeq)
                 .invoke[Int, BgenFileMetadata]("apply", fileIdx))
               val fileName = cb.memoize(metadata.invoke[String]("path"))
               val indexName = cb.memoize(metadata.invoke[String]("indexPath"))
@@ -647,7 +646,7 @@ case class BgenPartitionReaderWithVariantFilter(fileMetadata: Array[BgenFileMeta
             override val LproduceElement: CodeLabel = mb.defineAndImplementLabel { cb =>
               val Lstart = CodeLabel()
               cb.define(Lstart)
-              cb.ifx(currVariantIndex < stopVariantIndex, {
+              cb.if_(currVariantIndex < stopVariantIndex, {
                 val addr = index.queryIndex(cb, vs.elementRegion, currVariantIndex)
                   .loadField(cb, "offset")
                   .get(cb).asLong.value
@@ -678,7 +677,9 @@ case class BgenPartitionReaderWithVariantFilter(fileMetadata: Array[BgenFileMeta
               val bound = SStackStruct.constructFromArgs(cb, vs.elementRegion, TTuple(nextVariant.st.virtualType, TInt32),
                 EmitValue.present(if (nextVariant.st.size == 1)
                   nextVariant.insert(cb, elementRegion,
-                    nextVariant.st.virtualType.insert(TArray(TString), "alleles")._1.asInstanceOf[TStruct], ("alleles", EmitValue.missing(SJavaArrayString(true))))
+                    nextVariant.st.virtualType.asInstanceOf[TStruct].structInsert(TArray(TString), FastSeq("alleles")),
+                    ("alleles", EmitValue.missing(SJavaArrayString(true)))
+                  )
                 else
                   nextVariant),
                 EmitValue.present(primitive(const(nextVariant.st.size)))
@@ -756,7 +757,7 @@ case class BgenPartitionReader(fileMetadata: Array[BgenFileMetadata], rg: Option
         override def initialize(cb: EmitCodeBuilder, outerRegion: Value[Region]): Unit = {
 
           cb.assign(fileIdx, context.loadField(cb, "file_index").get(cb).asInt.value)
-          val metadata = cb.memoize(mb.getObject[IndexedSeq[BgenFileMetadata]](fileMetadata.toFastIndexedSeq)
+          val metadata = cb.memoize(mb.getObject[IndexedSeq[BgenFileMetadata]](fileMetadata.toFastSeq)
             .invoke[Int, BgenFileMetadata]("apply", fileIdx))
           val fileName = cb.memoize(metadata.invoke[String]("path"))
           val indexName = cb.memoize(metadata.invoke[String]("indexPath"))
@@ -778,7 +779,7 @@ case class BgenPartitionReader(fileMetadata: Array[BgenFileMetadata], rg: Option
         override val LproduceElement: CodeLabel = mb.defineAndImplementLabel { cb =>
           val Lstart = CodeLabel()
           cb.define(Lstart)
-          cb.ifx(currVariantIndex ceq endVariantIndex, cb.goto(LendOfStream))
+          cb.if_(currVariantIndex ceq endVariantIndex, cb.goto(LendOfStream))
 
           val addr = index.queryIndex(cb, eltRegion, currVariantIndex)
             .loadField(cb, "offset")

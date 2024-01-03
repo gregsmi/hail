@@ -7,8 +7,8 @@ import is.hail.backend.spark.{SparkBackend, SparkTaskContext}
 import is.hail.backend.{ExecuteContext, HailStateManager, HailTaskContext, TaskFinalizer}
 import is.hail.expr.ir
 import is.hail.expr.ir.functions.{BlockMatrixToTableFunction, IntervalFunctions, MatrixToTableFunction, TableToTableFunction}
-import is.hail.expr.ir.lowering.{DArrayLowering, LowerTableIR, LowerTableIRHelpers, LowererUnsupportedOperation, TableStage, TableStageDependency}
-import is.hail.expr.ir.streams.StreamProducer
+import is.hail.expr.ir.lowering._
+import is.hail.expr.ir.streams.{StreamProducer, StreamUtils}
 import is.hail.io._
 import is.hail.io.avro.AvroTableReader
 import is.hail.io.fs.FS
@@ -17,7 +17,6 @@ import is.hail.linalg.{BlockMatrix, BlockMatrixMetadata, BlockMatrixReadRowBlock
 import is.hail.rvd._
 import is.hail.sparkextras.ContextRDD
 import is.hail.types._
-import is.hail.types.tcoerce
 import is.hail.types.physical._
 import is.hail.types.physical.stypes._
 import is.hail.types.physical.stypes.concrete._
@@ -26,7 +25,6 @@ import is.hail.types.physical.stypes.primitives.{SInt64, SInt64Value}
 import is.hail.types.virtual._
 import is.hail.utils._
 import is.hail.utils.prettyPrint.ArrayOfByteArrayInputStream
-import is.hail.variant._
 import org.apache.spark.TaskContext
 import org.apache.spark.sql.Row
 import org.json4s.JsonAST.JString
@@ -74,6 +72,8 @@ abstract sealed class TableIR extends BaseIR {
   }
 
   def pyUnpersist(): TableIR = unpersist()
+
+  def typecheck(): Unit = {}
 }
 
 object TableLiteral {
@@ -156,12 +156,12 @@ object LoweredTableReader {
       case None =>
         info(s"scanning $context for sortedness...")
         val prevkey = AggSignature(PrevNonnull(),
-          FastIndexedSeq(),
-          FastIndexedSeq(keyType))
+          FastSeq(),
+          FastSeq(keyType))
 
         val count = AggSignature(Count(),
-          FastIndexedSeq(),
-          FastIndexedSeq())
+          FastSeq(),
+          FastSeq())
 
         val xType = TStruct(
           "key" -> keyType,
@@ -169,20 +169,20 @@ object LoweredTableReader {
           "prevkey" -> keyType)
 
         val samplekey = AggSignature(TakeBy(),
-          FastIndexedSeq(TInt32),
-          FastIndexedSeq(keyType, TFloat64))
+          FastSeq(TInt32),
+          FastSeq(keyType, TFloat64))
 
         val sum = AggSignature(Sum(),
-          FastIndexedSeq(),
-          FastIndexedSeq(TInt64))
+          FastSeq(),
+          FastSeq(TInt64))
 
         val minkey = AggSignature(TakeBy(),
-          FastIndexedSeq(TInt32),
-          FastIndexedSeq(keyType, keyType))
+          FastSeq(TInt32),
+          FastSeq(keyType, keyType))
 
         val maxkey = AggSignature(TakeBy(Descending),
-          FastIndexedSeq(TInt32),
-          FastIndexedSeq(keyType, keyType))
+          FastSeq(TInt32),
+          FastSeq(keyType, keyType))
 
         val scanBody = (ctx: IR) => StreamAgg(
           StreamAggScan(
@@ -193,30 +193,30 @@ object LoweredTableReader {
               (requestedType: Type) => bodyPType(requestedType.asInstanceOf[TStruct]),
               (requestedType: Type) => keys(requestedType.asInstanceOf[TStruct]))),
             "key",
-            MakeStruct(FastIndexedSeq(
+            MakeStruct(FastSeq(
               "key" -> Ref("key", keyType),
               "token" -> invokeSeeded("rand_unif", 1, TFloat64, RNGStateLiteral(), F64(0.0), F64(1.0)),
-              "prevkey" -> ApplyScanOp(FastIndexedSeq(), FastIndexedSeq(Ref("key", keyType)), prevkey)))),
+              "prevkey" -> ApplyScanOp(FastSeq(), FastSeq(Ref("key", keyType)), prevkey)))),
           "x",
-          Let("n", ApplyAggOp(FastIndexedSeq(), FastIndexedSeq(), count),
+          Let(FastSeq("n" -> ApplyAggOp(FastSeq(), FastSeq(), count)),
             AggLet("key", GetField(Ref("x", xType), "key"),
-              MakeStruct(FastIndexedSeq(
+              MakeStruct(FastSeq(
                 "n" -> Ref("n", TInt64),
                 "minkey" ->
                   ApplyAggOp(
-                    FastIndexedSeq(I32(1)),
-                    FastIndexedSeq(Ref("key", keyType), Ref("key", keyType)),
+                    FastSeq(I32(1)),
+                    FastSeq(Ref("key", keyType), Ref("key", keyType)),
                     minkey),
                 "maxkey" ->
                   ApplyAggOp(
-                    FastIndexedSeq(I32(1)),
-                    FastIndexedSeq(Ref("key", keyType), Ref("key", keyType)),
+                    FastSeq(I32(1)),
+                    FastSeq(Ref("key", keyType), Ref("key", keyType)),
                     maxkey),
                 "ksorted" ->
                   ApplyComparisonOp(EQ(TInt64),
                     ApplyAggOp(
-                      FastIndexedSeq(),
-                      FastIndexedSeq(
+                      FastSeq(),
+                      FastSeq(
                         invoke("toInt64", TInt64,
                           invoke("lor", TBoolean,
                             IsNA(GetField(Ref("x", xType), "prevkey")),
@@ -228,8 +228,8 @@ object LoweredTableReader {
                 "pksorted" ->
                   ApplyComparisonOp(EQ(TInt64),
                     ApplyAggOp(
-                      FastIndexedSeq(),
-                      FastIndexedSeq(
+                      FastSeq(),
+                      FastSeq(
                         invoke("toInt64", TInt64,
                           invoke("lor", TBoolean,
                             IsNA(selectPK(GetField(Ref("x", xType), "prevkey"))),
@@ -239,14 +239,14 @@ object LoweredTableReader {
                       sum),
                     Ref("n", TInt64)),
                 "sample" -> ApplyAggOp(
-                  FastIndexedSeq(I32(samplesPerPartition)),
-                  FastIndexedSeq(GetField(Ref("x", xType), "key"), GetField(Ref("x", xType), "token")),
+                  FastSeq(I32(samplesPerPartition)),
+                  FastSeq(GetField(Ref("x", xType), "key"), GetField(Ref("x", xType), "token")),
                   samplekey))),
               isScan = false)))
 
         val scanResult = CollectDistributedArray(
           ToStream(Literal(TArray(contextType), contexts)),
-          MakeStruct(FastIndexedSeq()),
+          MakeStruct(FastSeq()),
           "context",
           "globals",
           scanBody(Ref("context", contextType)), NA(TString), "table_coerce_sortedness")
@@ -258,7 +258,7 @@ object LoweredTableReader {
                 rangeIR(I32(0), ArrayLen(scanResult))) { i =>
                 InsertFields(
                   ArrayRef(scanResult, i),
-                  FastIndexedSeq("i" -> i))
+                  FastSeq("i" -> i))
               }) { row => ArrayLen(GetField(row, "minkey")) > 0 }
           ) { row =>
             InsertFields(row, FastSeq(
@@ -273,8 +273,8 @@ object LoweredTableReader {
         val partDataElt = tcoerce[TArray](sortedPartDataIR.typ).elementType
 
         val summary =
-          Let("sortedPartData", sortedPartDataIR,
-            MakeStruct(FastIndexedSeq(
+          Let(FastSeq("sortedPartData" -> sortedPartDataIR),
+            MakeStruct(FastSeq(
               "ksorted" ->
                 invoke("land", TBoolean,
                   StreamFold(ToStream(Ref("sortedPartData", sortedPartDataIR.typ)),
@@ -328,8 +328,8 @@ object LoweredTableReader {
               "sortedPartData" -> Ref("sortedPartData", sortedPartDataIR.typ))))
 
         val (Some(PTypeReferenceSingleCodeType(resultPType: PStruct)), f) = Compile[AsmFunction1RegionLong](ctx,
-          FastIndexedSeq(),
-          FastIndexedSeq[TypeInfo[_]](classInfo[Region]), LongInfo,
+          FastSeq(),
+          FastSeq[TypeInfo[_]](classInfo[Region]), LongInfo,
           summary,
           optimize = true)
 
@@ -489,8 +489,8 @@ abstract class TableReader {
         globals,
         RVDPartitioner.empty(ctx, requestedType.keyType),
         TableStageDependency.none,
-        MakeStream(FastIndexedSeq(), TStream(TStruct.empty)),
-        (_: Ref) => MakeStream(FastIndexedSeq(), TStream(requestedType.rowType)))
+        MakeStream(FastSeq(), TStream(TStruct.empty)),
+        (_: Ref) => MakeStream(FastSeq(), TStream(requestedType.rowType)))
     } else {
       lower(ctx, requestedType)
     }
@@ -573,8 +573,8 @@ case class PartitionRVDReader(rvd: RVD, uidFieldName: String) extends PartitionR
     requestedType: TStruct): IEmitCode = {
 
     val (Some(PTypeReferenceSingleCodeType(upcastPType: PBaseStruct)), upcast) = Compile[AsmFunction2RegionLongLong](ctx,
-      FastIndexedSeq(("elt", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(rvd.rowPType)))),
-      FastIndexedSeq(classInfo[Region], LongInfo),
+      FastSeq(("elt", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(rvd.rowPType)))),
+      FastSeq(classInfo[Region], LongInfo),
       LongInfo,
       PruneDeadFields.upcast(ctx, Ref("elt", rvd.rowType), requestedType))
 
@@ -613,7 +613,7 @@ case class PartitionRVDReader(rvd: RVD, uidFieldName: String) extends PartitionR
         override val elementRegion: Settable[Region] = region
         override val requiresMemoryManagementPerElement: Boolean = true
         override val LproduceElement: CodeLabel = mb.defineAndImplementLabel { cb =>
-          cb.ifx(!iterator.invoke[Boolean]("hasNext"), cb.goto(LendOfStream))
+          cb.if_(!iterator.invoke[Boolean]("hasNext"), cb.goto(LendOfStream))
           cb.assign(curIdx, curIdx + 1)
           cb.assign(next, upcastF.invoke[Region, Long, Long]("apply", region, Code.longValue(iterator.invoke[java.lang.Long]("next"))))
           cb.goto(LproduceElementDone)
@@ -709,7 +709,7 @@ case class PartitionNativeReader(spec: AbstractTypedCodecSpec, uidFieldName: Str
         override val elementRegion: Settable[Region] = region
         override val requiresMemoryManagementPerElement: Boolean = true
         override val LproduceElement: CodeLabel = mb.defineAndImplementLabel { cb =>
-          cb.ifx(!xRowBuf.readByte().toZ, cb.goto(LendOfStream))
+          cb.if_(!xRowBuf.readByte().toZ, cb.goto(LendOfStream))
 
           val base = spec.encodedType.buildDecoder(concreteType, cb.emb.ecb).apply(cb, region, xRowBuf).asBaseStruct
           if (insertUID) {
@@ -781,9 +781,9 @@ case class PartitionNativeIntervalReader(sm: HailStateManager, tablePath: String
 
       val pathsType = VirtualTypeWithReq.fullyRequired(TArray(TString))
       val rowsPath = tableSpec.rowsComponent.absolutePath(tablePath)
-      val partitionPathsRuntime = cb.memoizeField(mb.addLiteral(cb, rowsSpec.absolutePartPaths(rowsPath).toFastIndexedSeq, pathsType), "partitionPathsRuntime")
+      val partitionPathsRuntime = cb.memoizeField(mb.addLiteral(cb, rowsSpec.absolutePartPaths(rowsPath).toFastSeq, pathsType), "partitionPathsRuntime")
         .asIndexable
-      val indexPathsRuntime = cb.memoizeField(mb.addLiteral(cb, rowsSpec.partFiles.map(partPath => s"${ rowsPath }/${ indexSpec.relPath }/${ partPath }.idx").toFastIndexedSeq, pathsType), "indexPathsRuntime")
+      val indexPathsRuntime = cb.memoizeField(mb.addLiteral(cb, rowsSpec.partFiles.map(partPath => s"${ rowsPath }/${ indexSpec.relPath }/${ partPath }.idx").toFastSeq, pathsType), "indexPathsRuntime")
         .asIndexable
 
       val currIdxInPartition = mb.genFieldThisRef[Long]("n_to_read")
@@ -820,7 +820,7 @@ case class PartitionNativeIntervalReader(sm: HailStateManager, tablePath: String
             SStackInterval.construct(EmitValue.present(startBound), EmitValue.present(endBound), includesStart, includesEnd),
             -1)
 
-          cb.ifx(endPart < startPart, cb._fatal("invalid start/end config - startPartIdx=",
+          cb.if_(endPart < startPart, cb._fatal("invalid start/end config - startPartIdx=",
             startPartitionIndex.toS, ", endPartIdx=", lastIncludedPartitionIdx.toS))
 
           cb.assign(startPartitionIndex, startPart)
@@ -840,13 +840,13 @@ case class PartitionNativeIntervalReader(sm: HailStateManager, tablePath: String
         override val LproduceElement: CodeLabel = mb.defineAndImplementLabel { cb =>
           val Lstart = CodeLabel()
           cb.define(Lstart)
-          cb.ifx(currIdxInPartition >= stopIdxInPartition, {
-            cb.ifx(currPartitionIdx >= partitioner.numPartitions || currPartitionIdx > lastIncludedPartitionIdx,
+          cb.if_(currIdxInPartition >= stopIdxInPartition, {
+            cb.if_(currPartitionIdx >= partitioner.numPartitions || currPartitionIdx > lastIncludedPartitionIdx,
               cb.goto(LendOfStream))
 
             val requiresIndexInit = cb.newLocal[Boolean]("requiresIndexInit")
 
-            cb.ifx(streamFirst, {
+            cb.if_(streamFirst, {
               // if first, reuse open index from previous time the stream was run if possible
               // this is a common case if looking up nearby keys
               cb.assign(requiresIndexInit, !(indexInitialized && (indexCachedIndex ceq currPartitionIdx)))
@@ -856,8 +856,8 @@ case class PartitionNativeIntervalReader(sm: HailStateManager, tablePath: String
               cb.assign(requiresIndexInit, true)
             })
 
-            cb.ifx(requiresIndexInit, {
-              cb.ifx(indexInitialized, {
+            cb.if_(requiresIndexInit, {
+              cb.if_(indexInitialized, {
                 cb += finalizer.invoke[Unit]("clear")
                 index.close(cb)
                 cb += ib.close()
@@ -875,8 +875,8 @@ case class PartitionNativeIntervalReader(sm: HailStateManager, tablePath: String
               cb += finalizer.invoke[Closeable, Unit]("addCloseable", ib)
             })
 
-            cb.ifx(currPartitionIdx ceq lastIncludedPartitionIdx, {
-              cb.ifx(currPartitionIdx ceq startPartitionIndex, {
+            cb.if_(currPartitionIdx ceq lastIncludedPartitionIdx, {
+              cb.if_(currPartitionIdx ceq startPartitionIndex, {
                 // query the full interval
                 val indexResult = index.queryInterval(cb, ctx)
                 val startIdx = indexResult.loadField(cb, 0)
@@ -889,7 +889,7 @@ case class PartitionNativeIntervalReader(sm: HailStateManager, tablePath: String
                   .asInt64
                   .value
                 cb.assign(stopIdxInPartition, endIdx)
-                cb.ifx(endIdx > startIdx, {
+                cb.if_(endIdx > startIdx, {
                   val firstOffset = indexResult.loadField(cb, 2)
                     .get(cb)
                     .asBaseStruct
@@ -910,7 +910,7 @@ case class PartitionNativeIntervalReader(sm: HailStateManager, tablePath: String
                 // no need to seek, starting at beginning of partition
               })
             }, {
-              cb.ifx(currPartitionIdx ceq startPartitionIndex,
+              cb.if_(currPartitionIdx ceq startPartitionIndex,
                 {
                   // read from left endpoint until end of partition
                   val indexResult = index.queryBound(cb, ctx.loadStart(cb).get(cb).asBaseStruct, cb.memoize(!ctx.includesStart))
@@ -918,7 +918,7 @@ case class PartitionNativeIntervalReader(sm: HailStateManager, tablePath: String
 
                   cb.assign(currIdxInPartition, startIdx)
                   cb.assign(stopIdxInPartition, index.nKeys(cb))
-                  cb.ifx(currIdxInPartition < stopIdxInPartition, {
+                  cb.if_(currIdxInPartition < stopIdxInPartition, {
                     val firstOffset = indexResult.loadField(cb, 1).get(cb).asBaseStruct
                       .loadField(cb, "offset").get(cb).asInt64.value
 
@@ -935,7 +935,7 @@ case class PartitionNativeIntervalReader(sm: HailStateManager, tablePath: String
             cb.goto(Lstart)
           })
 
-          cb.ifx(ib.readByte() cne 1, cb._fatal(s"bad buffer state!"))
+          cb.if_(ib.readByte() cne 1, cb._fatal(s"bad buffer state!"))
           cb.assign(currIdxInPartition, currIdxInPartition + 1L)
           val decRow = spec.encodedType.buildDecoder(requestedType, cb.emb.ecb)(cb, region, ib).asBaseStruct
           cb.assign(decodedRow, if (insertUID)
@@ -943,7 +943,7 @@ case class PartitionNativeIntervalReader(sm: HailStateManager, tablePath: String
               elementRegion,
               eltSType.virtualType.asInstanceOf[TStruct],
               uidFieldName -> EmitValue.present(uidSType.fromEmitCodes(cb,
-                FastIndexedSeq(
+                FastSeq(
                 EmitCode.present(mb, primitive(currPartitionIdx)),
                 EmitCode.present(mb, primitive(currIdxInPartition))))))
             else decRow)
@@ -1045,7 +1045,7 @@ case class PartitionNativeReaderIndexed(
           cb.assign(ib, spec.buildCodeInputBuffer(
             Code.newInstance[ByteTrackingInputStream, InputStream](
               cb.emb.openUnbuffered(partitionPath, false))))
-          cb.ifx(endIndex > startIndex, {
+          cb.if_(endIndex > startIndex, {
             val firstOffset = indexResult.loadField(cb, 2)
               .get(cb)
               .asBaseStruct
@@ -1061,9 +1061,9 @@ case class PartitionNativeReaderIndexed(
         override val elementRegion: Settable[Region] = region
         override val requiresMemoryManagementPerElement: Boolean = true
         override val LproduceElement: CodeLabel = mb.defineAndImplementLabel { cb =>
-          cb.ifx(curIdx >= endIdx, cb.goto(LendOfStream))
+          cb.if_(curIdx >= endIdx, cb.goto(LendOfStream))
           val next = ib.readByte()
-          cb.ifx(next cne 1, cb._fatal(s"bad buffer state!"))
+          cb.if_(next cne 1, cb._fatal(s"bad buffer state!"))
           val base = spec.encodedType.buildDecoder(concreteType, cb.emb.ecb)(cb, region, ib).asBaseStruct
           if (insertUID)
             cb.assign(decodedRow, new SInsertFieldsStructValue(
@@ -1317,7 +1317,7 @@ case class PartitionZippedIndexedNativeReader(specLeft: AbstractTypedCodecSpec, 
                 .asString
                 .loadString(cb), true))))
 
-          cb.ifx(endIndex > startIndex, {
+          cb.if_(endIndex > startIndex, {
             val leafNode = indexResult.loadField(cb, 2)
               .get(cb)
               .asBaseStruct
@@ -1359,11 +1359,11 @@ case class PartitionZippedIndexedNativeReader(specLeft: AbstractTypedCodecSpec, 
         override val elementRegion: Settable[Region] = region
         override val requiresMemoryManagementPerElement: Boolean = true
         override val LproduceElement: CodeLabel = mb.defineAndImplementLabel { cb =>
-          cb.ifx(curIdx >= endIdx, cb.goto(LendOfStream))
+          cb.if_(curIdx >= endIdx, cb.goto(LendOfStream))
           val nextLeft = leftBuffer.readByte()
-          cb.ifx(nextLeft cne 1, cb._fatal(s"bad rows buffer state!"))
+          cb.if_(nextLeft cne 1, cb._fatal(s"bad rows buffer state!"))
           val nextRight = rightBuffer.readByte()
-          cb.ifx(nextRight cne 1, cb._fatal(s"bad entries buffer state!"))
+          cb.if_(nextRight cne 1, cb._fatal(s"bad entries buffer state!"))
           cb.assign(curIdx, curIdx + 1L)
           cb.assign(leftValue, leftDec(cb, region, leftBuffer))
           cb.assign(rightValue, rightDec(cb, region, rightBuffer))
@@ -1529,8 +1529,8 @@ case class TableNativeZippedReader(
 
   def fieldInserter(ctx: ExecuteContext, pLeft: PStruct, pRight: PStruct): (PStruct, (HailClassLoader, FS, HailTaskContext, Region) => AsmFunction3RegionLongLongLong) = {
     val (Some(PTypeReferenceSingleCodeType(t: PStruct)), mk) = ir.Compile[AsmFunction3RegionLongLongLong](ctx,
-      FastIndexedSeq("left" -> SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(pLeft)), "right" -> SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(pRight))),
-      FastIndexedSeq(typeInfo[Region], LongInfo, LongInfo), LongInfo,
+      FastSeq("left" -> SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(pLeft)), "right" -> SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(pRight))),
+      FastSeq(typeInfo[Region], LongInfo, LongInfo), LongInfo,
       InsertFields(Ref("left", pLeft.virtualType),
         pRight.fieldNames.map(f =>
           f -> GetField(Ref("right", pRight.virtualType), f))))
@@ -1668,7 +1668,7 @@ case class TableRead(typ: TableType, dropRows: Boolean, tr: TableReader) extends
       fatal(s"bad type:\n  full type: ${tr.fullType}\n  requested: $typ\n  reader: $tr", e)
   }
 
-  override def partitionCounts: Option[IndexedSeq[Long]] = if (dropRows) Some(FastIndexedSeq(0L)) else tr.partitionCounts
+  override def partitionCounts: Option[IndexedSeq[Long]] = if (dropRows) Some(FastSeq(0L)) else tr.partitionCounts
 
   def isDistinctlyKeyed: Boolean = tr.isDistinctlyKeyed
 
@@ -1686,26 +1686,29 @@ case class TableRead(typ: TableType, dropRows: Boolean, tr: TableReader) extends
 }
 
 case class TableParallelize(rowsAndGlobal: IR, nPartitions: Option[Int] = None) extends TableIR {
-  require(rowsAndGlobal.typ.isInstanceOf[TStruct])
-  require(rowsAndGlobal.typ.asInstanceOf[TStruct].fieldNames.sameElements(Array("rows", "global")))
-  require(nPartitions.forall(_ > 0))
+  override def typecheck(): Unit = {
+    assert(rowsAndGlobal.typ.isInstanceOf[TStruct])
+    assert(rowsAndGlobal.typ.asInstanceOf[TStruct].fieldNames.sameElements(Array("rows", "global")))
+    assert(nPartitions.forall(_ > 0))
+  }
 
   lazy val rowCountUpperBound: Option[Long] = None
 
-  private val rowsType = rowsAndGlobal.typ.asInstanceOf[TStruct].fieldType("rows").asInstanceOf[TArray]
-  private val globalsType = rowsAndGlobal.typ.asInstanceOf[TStruct].fieldType("global").asInstanceOf[TStruct]
-
-  val childrenSeq: IndexedSeq[BaseIR] = FastIndexedSeq(rowsAndGlobal)
+  val childrenSeq: IndexedSeq[BaseIR] = FastSeq(rowsAndGlobal)
 
   def copy(newChildren: IndexedSeq[BaseIR]): TableParallelize = {
     val IndexedSeq(newrowsAndGlobal: IR) = newChildren
     TableParallelize(newrowsAndGlobal, nPartitions)
   }
 
-  val typ: TableType = TableType(
-    rowsType.elementType.asInstanceOf[TStruct],
-    FastIndexedSeq(),
-    globalsType)
+  lazy val typ: TableType = {
+    def rowsType = rowsAndGlobal.typ.asInstanceOf[TStruct].fieldType("rows").asInstanceOf[TArray]
+    def globalsType = rowsAndGlobal.typ.asInstanceOf[TStruct].fieldType("global").asInstanceOf[TStruct]
+    TableType(
+      rowsType.elementType.asInstanceOf[TStruct],
+      FastSeq(),
+      globalsType)
+  }
 
   protected[ir] override def execute(ctx: ExecuteContext, r: LoweringAnalyses): TableExecuteIntermediate = {
     val (ptype: PStruct, res) = CompileAndEvaluate._apply(ctx, rowsAndGlobal, optimize = false) match {
@@ -1778,14 +1781,16 @@ case class TableParallelize(rowsAndGlobal: IR, nPartitions: Option[Int] = None) 
   * - Otherwise, if 'isSorted' is false and n < 'keys.length', then shuffle.
   */
 case class TableKeyBy(child: TableIR, keys: IndexedSeq[String], isSorted: Boolean = false) extends TableIR {
-  private val fields = child.typ.rowType.fieldNames.toSet
-  assert(keys.forall(fields.contains), s"${ keys.filter(k => !fields.contains(k)).mkString(", ") }")
+  override def typecheck(): Unit = {
+    val fields = child.typ.rowType.fieldNames.toSet
+    assert(keys.forall(fields.contains), s"${keys.filter(k => !fields.contains(k)).mkString(", ")}")
+  }
 
   lazy val rowCountUpperBound: Option[Long] = child.rowCountUpperBound
 
   val childrenSeq: IndexedSeq[BaseIR] = Array(child)
 
-  val typ: TableType = child.typ.copy(key = keys)
+  lazy val typ: TableType = child.typ.copy(key = keys)
 
   def definitelyDoesNotShuffle: Boolean = child.typ.key.startsWith(keys) || isSorted
 
@@ -1796,7 +1801,7 @@ case class TableKeyBy(child: TableIR, keys: IndexedSeq[String], isSorted: Boolea
 
   protected[ir] override def execute(ctx: ExecuteContext, r: LoweringAnalyses): TableExecuteIntermediate = {
     val tv = child.execute(ctx, r).asTableValue(ctx)
-    new TableValueIntermediate(tv.copy(typ = typ, rvd = tv.rvd.enforceKey(ctx, keys, isSorted)))
+    TableValueIntermediate(tv.copy(typ = typ, rvd = tv.rvd.enforceKey(ctx, keys, isSorted)))
   }
 }
 
@@ -1822,24 +1827,29 @@ case class TableGen(contexts: IR,
                     errorId: Int = ErrorIDs.NO_ERROR
                    ) extends TableIR {
 
-  TypeCheck.coerce[TStream]("contexts", contexts.typ)
+  override def typecheck(): Unit = {
+    TypeCheck.coerce[TStream]("contexts", contexts.typ)
+    TypeCheck.coerce[TStruct]("globals", globals.typ)
+    val bodyType = TypeCheck.coerce[TStream]("body", body.typ)
+    val rowType = TypeCheck.coerce[TStruct]("body.elementType", bodyType.elementType)
 
-  private val globalType =
+    if (!partitioner.kType.isSubsetOf(rowType))
+      throw new IllegalArgumentException(
+        s"""'partitioner': key type contains fields absent from row type
+           |  Key type: ${partitioner.kType}
+           |  Row type: $rowType""".stripMargin
+        )
+  }
+
+  private def globalType =
     TypeCheck.coerce[TStruct]("globals", globals.typ)
 
-  private val rowType = {
+  private def rowType = {
     val bodyType = TypeCheck.coerce[TStream]( "body", body.typ)
     TypeCheck.coerce[TStruct]( "body.elementType", bodyType.elementType)
   }
 
-  if (!partitioner.kType.isSubsetOf(rowType))
-    throw new IllegalArgumentException(
-      s"""'partitioner': key type contains fields absent from row type
-         |  Key type: ${partitioner.kType}
-         |  Row type: $rowType""".stripMargin
-    )
-
-  override def typ: TableType =
+  override lazy val typ: TableType =
     TableType(rowType, partitioner.kType.fieldNames, globalType)
 
   override val rowCountUpperBound: Option[Long] =
@@ -1870,7 +1880,7 @@ case class TableRange(n: Int, nPartitions: Int) extends TableIR {
 
   private val partCounts = partition(n, nPartitionsAdj)
 
-  override val partitionCounts = Some(partCounts.map(_.toLong).toFastIndexedSeq)
+  override val partitionCounts = Some(partCounts.map(_.toLong).toFastSeq)
 
   lazy val rowCountUpperBound: Option[Long] = Some(n.toLong)
 
@@ -1912,7 +1922,7 @@ case class TableRange(n: Int, nPartitions: Int) extends TableIR {
 case class TableFilter(child: TableIR, pred: IR) extends TableIR {
   val childrenSeq: IndexedSeq[BaseIR] = Array(child, pred)
 
-  val typ: TableType = child.typ
+  def typ: TableType = child.typ
 
   lazy val rowCountUpperBound: Option[Long] = child.rowCountUpperBound
 
@@ -1931,10 +1941,10 @@ case class TableFilter(child: TableIR, pred: IR) extends TableIR {
 
     val (Some(BooleanSingleCodeType), f) = ir.Compile[AsmFunction3RegionLongLongBoolean](
       ctx,
-      FastIndexedSeq(("row", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.rvd.rowPType))),
+      FastSeq(("row", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.rvd.rowPType))),
         ("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.globals.t)))),
-      FastIndexedSeq(classInfo[Region], LongInfo, LongInfo), BooleanInfo,
-      Coalesce(FastIndexedSeq(pred, False())))
+      FastSeq(classInfo[Region], LongInfo, LongInfo), BooleanInfo,
+      Coalesce(FastSeq(pred, False())))
 
     new TableValueIntermediate(
       tv.filterWithPartitionOp(ctx.theHailClassLoader, ctx.fsBc, f)((rowF, ctx, ptr, globalPtr) => rowF(ctx.region, ptr, globalPtr)))
@@ -1953,7 +1963,7 @@ trait TableSubset extends TableIR {
 
   def typ: TableType = child.typ
 
-  lazy val childrenSeq: IndexedSeq[BaseIR] = FastIndexedSeq(child)
+  lazy val childrenSeq: IndexedSeq[BaseIR] = FastSeq(child)
 
   override def partitionCounts: Option[IndexedSeq[Long]] =
     child.partitionCounts.map(subsetKind match {
@@ -2006,7 +2016,7 @@ case class TableRepartition(child: TableIR, n: Int, strategy: Int) extends Table
 
   lazy val rowCountUpperBound: Option[Long] = child.rowCountUpperBound
 
-  lazy val childrenSeq: IndexedSeq[BaseIR] = FastIndexedSeq(child)
+  lazy val childrenSeq: IndexedSeq[BaseIR] = FastSeq(child)
 
   def copy(newChildren: IndexedSeq[BaseIR]): TableRepartition = {
     val IndexedSeq(newChild: TableIR) = newChildren
@@ -2050,22 +2060,26 @@ case class TableJoin(left: TableIR, right: TableIR, joinType: String, joinKey: I
   extends TableIR {
 
   require(joinKey >= 0)
-  require(left.typ.key.length >= joinKey)
-  require(right.typ.key.length >= joinKey)
-  require(left.typ.keyType.truncate(joinKey) isIsomorphicTo right.typ.keyType.truncate(joinKey))
-  require(left.typ.globalType.fieldNames.toSet
-    .intersect(right.typ.globalType.fieldNames.toSet)
-    .isEmpty)
   require(joinType == "inner" ||
     joinType == "left" ||
     joinType == "right" ||
     joinType == "outer")
 
+  override def typecheck(): Unit = {
+    assert(left.typ.key.length >= joinKey)
+    assert(right.typ.key.length >= joinKey)
+    assert(left.typ.keyType.truncate(joinKey) isIsomorphicTo right.typ.keyType.truncate(joinKey))
+    assert(
+      left.typ.globalType.fieldNames.toSet
+        .intersect(right.typ.globalType.fieldNames.toSet)
+        .isEmpty)
+  }
+
   val childrenSeq: IndexedSeq[BaseIR] = Array(left, right)
 
   lazy val rowCountUpperBound: Option[Long] = None
 
-  private val newRowType = {
+  lazy val typ: TableType = {
     val leftRowType = left.typ.rowType
     val rightRowType = right.typ.rowType
     val leftKey = left.typ.key.take(joinKey)
@@ -2079,14 +2093,12 @@ case class TableJoin(left: TableIR, right: TableIR, joinType: String, joinKey: I
       .nonEmpty)
       throw new RuntimeException(s"invalid join: \n  left value:  $leftValueType\n  right value: $rightValueType")
 
-    leftKeyType ++ leftValueType ++ rightValueType
+    val newRowType = leftKeyType ++ leftValueType ++ rightValueType
+    val newGlobalType = left.typ.globalType ++ right.typ.globalType
+    val newKey = left.typ.key ++ right.typ.key.drop(joinKey)
+
+    TableType(newRowType, newKey, newGlobalType)
   }
-
-  private val newGlobalType = left.typ.globalType ++ right.typ.globalType
-
-  private val newKey = left.typ.key ++ right.typ.key.drop(joinKey)
-
-  val typ: TableType = TableType(newRowType, newKey, newGlobalType)
 
   def copy(newChildren: IndexedSeq[BaseIR]): TableJoin = {
     assert(newChildren.length == 2)
@@ -2114,8 +2126,10 @@ case class TableIntervalJoin(
 
   lazy val rowCountUpperBound: Option[Long] = left.rowCountUpperBound
 
-  val rightType: Type = if (product) TArray(right.typ.valueType) else right.typ.valueType
-  val typ: TableType = left.typ.copy(rowType = left.typ.rowType.appendKey(root, rightType))
+  lazy val typ: TableType = {
+    val rightType: Type = if (product) TArray(right.typ.valueType) else right.typ.valueType
+    left.typ.copy(rowType = left.typ.rowType.appendKey(root, rightType))
+  }
 
   override def copy(newChildren: IndexedSeq[BaseIR]): TableIR =
     TableIntervalJoin(newChildren(0).asInstanceOf[TableIR], newChildren(1).asInstanceOf[TableIR], root, product)
@@ -2196,21 +2210,25 @@ case class TableIntervalJoin(
   * is likely the last.
   */
 case class TableMultiWayZipJoin(childrenSeq: IndexedSeq[TableIR], fieldName: String, globalName: String) extends TableIR {
-  require(childrenSeq.length > 0, "there must be at least one table as an argument")
+  require(childrenSeq.nonEmpty, "there must be at least one table as an argument")
 
-  private val first = childrenSeq.head
-  private val rest = childrenSeq.tail
+  override def typecheck(): Unit = {
+    val first = childrenSeq.head
+    val rest = childrenSeq.tail
+    assert(rest.forall(e => e.typ.rowType == first.typ.rowType), "all rows must have the same type")
+    assert(rest.forall(e => e.typ.key == first.typ.key), "all keys must be the same")
+    assert(
+      rest.forall(e => e.typ.globalType == first.typ.globalType),
+      "all globals must have the same type")
+  }
+
+  private def first = childrenSeq.head
 
   lazy val rowCountUpperBound: Option[Long] = None
 
-  require(rest.forall(e => e.typ.rowType == first.typ.rowType), "all rows must have the same type")
-  require(rest.forall(e => e.typ.key == first.typ.key), "all keys must be the same")
-  require(rest.forall(e => e.typ.globalType == first.typ.globalType),
-    "all globals must have the same type")
-
-  private val newGlobalType = TStruct(globalName -> TArray(first.typ.globalType))
-  private val newValueType = TStruct(fieldName -> TArray(first.typ.valueType))
-  private val newRowType = first.typ.keyType ++ newValueType
+  private def newGlobalType = TStruct(globalName -> TArray(first.typ.globalType))
+  private def newValueType = TStruct(fieldName -> TArray(first.typ.valueType))
+  private def newRowType = first.typ.keyType ++ newValueType
 
   lazy val typ: TableType = first.typ.copy(
     rowType = newRowType,
@@ -2224,7 +2242,7 @@ case class TableMultiWayZipJoin(childrenSeq: IndexedSeq[TableIR], fieldName: Str
     val sm = ctx.stateManager
     val childValues = childrenSeq.map(_.execute(ctx, r).asTableValue(ctx))
 
-    val childRVDs = RVD.unify(ctx, childValues.map(_.rvd)).toFastIndexedSeq
+    val childRVDs = RVD.unify(ctx, childValues.map(_.rvd)).toFastSeq
     assert(childRVDs.forall(_.typ.key.startsWith(typ.key)))
 
     val repartitionedRVDs =
@@ -2296,15 +2314,18 @@ case class TableMultiWayZipJoin(childrenSeq: IndexedSeq[TableIR], fieldName: Str
 }
 
 case class TableLeftJoinRightDistinct(left: TableIR, right: TableIR, root: String) extends TableIR {
-  require(right.typ.keyType isPrefixOf left.typ.keyType,
-    s"\n  L: ${ left.typ }\n  R: ${ right.typ }")
+  override def typecheck(): Unit = {
+    assert(
+      right.typ.keyType isPrefixOf left.typ.keyType,
+      s"\n  L: ${left.typ}\n  R: ${right.typ}")
+  }
 
   lazy val rowCountUpperBound: Option[Long] = left.rowCountUpperBound
 
   lazy val childrenSeq: IndexedSeq[BaseIR] = Array(left, right)
 
-  private val newRowType = left.typ.rowType.structInsert(right.typ.valueType, List(root))._1
-  val typ: TableType = left.typ.copy(rowType = newRowType)
+  lazy val typ: TableType = left.typ.copy(
+    rowType = left.typ.rowType.structInsert(right.typ.valueType, FastSeq(root)))
 
   override def partitionCounts: Option[IndexedSeq[Long]] = left.partitionCounts
 
@@ -2339,11 +2360,18 @@ case class TableMapPartitions(child: TableIR,
   requestedKey: Int,
   allowedOverlap: Int
 ) extends TableIR {
-  assert(body.typ.isInstanceOf[TStream], s"${ body.typ }")
-  assert(allowedOverlap >= -1 && allowedOverlap <= child.typ.key.size)
-  assert(requestedKey >= 0 && requestedKey <= child.typ.key.size)
+  override def typecheck(): Unit = {
+    assert(body.typ.isInstanceOf[TStream], s"${body.typ}")
+    assert(allowedOverlap >= -1)
+    assert(allowedOverlap <= child.typ.key.size)
+    assert(requestedKey >= 0)
+    assert(requestedKey <= child.typ.key.size)
+    assert(StreamUtils.isIterationLinear(body, partitionStreamName), "must iterate over the partition exactly once")
+    val newRowType = body.typ.asInstanceOf[TStream].elementType.asInstanceOf[TStruct]
+    child.typ.key.foreach { k => if (!newRowType.hasField(k)) throw new RuntimeException(s"prev key: ${child.typ.key}, new row: ${newRowType}") }
+  }
 
-  lazy val typ = child.typ.copy(
+  lazy val typ: TableType = child.typ.copy(
     rowType = body.typ.asInstanceOf[TStream].elementType.asInstanceOf[TStruct])
 
   lazy val childrenSeq: IndexedSeq[BaseIR] = Array(child, body)
@@ -2408,11 +2436,16 @@ case class TableMapPartitions(child: TableIR,
 
 // Must leave key fields unchanged.
 case class TableMapRows(child: TableIR, newRow: IR) extends TableIR {
+  override def typecheck(): Unit = {
+    val newFieldSet = newRow.typ.asInstanceOf[TStruct].fieldNames.toSet
+    assert(child.typ.key.forall(newFieldSet.contains))
+  }
+
   val childrenSeq: IndexedSeq[BaseIR] = Array(child, newRow)
 
   lazy val rowCountUpperBound: Option[Long] = child.rowCountUpperBound
 
-  val typ: TableType = child.typ.copy(rowType = newRow.typ.asInstanceOf[TStruct])
+  lazy val typ: TableType = child.typ.copy(rowType = newRow.typ.asInstanceOf[TStruct])
 
   def copy(newChildren: IndexedSeq[BaseIR]): TableMapRows = {
     assert(newChildren.length == 2)
@@ -2430,10 +2463,10 @@ case class TableMapRows(child: TableIR, newRow: IR) extends TableIR {
     if (extracted.aggs.isEmpty) {
       val (Some(PTypeReferenceSingleCodeType(rTyp)), f) = ir.Compile[AsmFunction3RegionLongLongLong](
         ctx,
-        FastIndexedSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.globals.t))),
+        FastSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.globals.t))),
           ("row", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.rvd.rowPType)))),
-        FastIndexedSeq(classInfo[Region], LongInfo, LongInfo), LongInfo,
-        Coalesce(FastIndexedSeq(
+        FastSeq(classInfo[Region], LongInfo, LongInfo), LongInfo,
+        Coalesce(FastSeq(
           extracted.postAggIR,
           Die("Internal error: TableMapRows: row expression missing", extracted.postAggIR.typ))))
 
@@ -2484,17 +2517,17 @@ case class TableMapRows(child: TableIR, newRow: IR) extends TableIR {
 
     val (_, initF) = ir.CompileWithAggregators[AsmFunction2RegionLongUnit](ctx,
       extracted.states,
-      FastIndexedSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.globals.t)))),
-      FastIndexedSeq(classInfo[Region], LongInfo), UnitInfo,
-      Begin(FastIndexedSeq(extracted.init)))
+      FastSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.globals.t)))),
+      FastSeq(classInfo[Region], LongInfo), UnitInfo,
+      Begin(FastSeq(extracted.init)))
 
     val serializeF = extracted.serialize(ctx, spec)
 
     val (_, eltSeqF) = ir.CompileWithAggregators[AsmFunction3RegionLongLongUnit](ctx,
       extracted.states,
-      FastIndexedSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.globals.t))),
+      FastSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.globals.t))),
         ("row", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.rvd.rowPType)))),
-      FastIndexedSeq(classInfo[Region], LongInfo, LongInfo), UnitInfo,
+      FastSeq(classInfo[Region], LongInfo, LongInfo), UnitInfo,
       extracted.eltOp(ctx))
 
     val read = extracted.deserialize(ctx, spec)
@@ -2503,11 +2536,11 @@ case class TableMapRows(child: TableIR, newRow: IR) extends TableIR {
 
     val (Some(PTypeReferenceSingleCodeType(rTyp)), f) = ir.CompileWithAggregators[AsmFunction3RegionLongLongLong](ctx,
       extracted.states,
-      FastIndexedSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.globals.t))),
+      FastSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.globals.t))),
         ("row", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.rvd.rowPType)))),
-      FastIndexedSeq(classInfo[Region], LongInfo, LongInfo), LongInfo,
-      Let(scanRef, extracted.results,
-        Coalesce(FastIndexedSeq(
+      FastSeq(classInfo[Region], LongInfo, LongInfo), LongInfo,
+      Let(FastSeq(scanRef -> extracted.results),
+        Coalesce(FastSeq(
           extracted.postAggIR,
           Die("Internal error: TableMapRows: row expression missing", extracted.postAggIR.typ)))))
     assert(rTyp.virtualType == newRow.typ)
@@ -2731,7 +2764,7 @@ case class TableMapGlobals(child: TableIR, newGlobals: IR) extends TableIR {
 
   lazy val rowCountUpperBound: Option[Long] = child.rowCountUpperBound
 
-  val typ: TableType =
+  lazy val typ: TableType =
     child.typ.copy(globalType = newGlobals.typ.asInstanceOf[TStruct])
 
   def copy(newChildren: IndexedSeq[BaseIR]): TableMapGlobals = {
@@ -2745,9 +2778,9 @@ case class TableMapGlobals(child: TableIR, newGlobals: IR) extends TableIR {
     val tv = child.execute(ctx, r).asTableValue(ctx)
 
     val (Some(PTypeReferenceSingleCodeType(resultPType: PStruct)), f) = Compile[AsmFunction2RegionLongLong](ctx,
-      FastIndexedSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.globals.t)))),
-      FastIndexedSeq(classInfo[Region], LongInfo), LongInfo,
-      Coalesce(FastIndexedSeq(
+      FastSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(tv.globals.t)))),
+      FastSeq(classInfo[Region], LongInfo), LongInfo,
+      Coalesce(FastSeq(
         newGlobals,
         Die("Internal error: TableMapGlobals: globals missing", newGlobals.typ))))
 
@@ -2760,38 +2793,33 @@ case class TableMapGlobals(child: TableIR, newGlobals: IR) extends TableIR {
 
 case class TableExplode(child: TableIR, path: IndexedSeq[String]) extends TableIR {
   assert(path.nonEmpty)
-  assert(!child.typ.key.contains(path.head))
+
+  override def typecheck(): Unit = {
+    assert(!child.typ.key.contains(path.head))
+  }
 
   lazy val rowCountUpperBound: Option[Long] = None
 
   lazy val childrenSeq: IndexedSeq[BaseIR] = Array(child)
 
-  private val childRowType = child.typ.rowType
+  private def childRowType = child.typ.rowType
 
-  private val length: IR = {
-    Coalesce(FastIndexedSeq(
-      ArrayLen(CastToArray(
-        path.foldLeft[IR](Ref("row", childRowType))((struct, field) =>
-          GetField(struct, field)))),
-      0))
-  }
-
-  val idx = Ref(genUID(), TInt32)
-  val newRow: InsertFields = {
+  private[this] lazy val idx = Ref(genUID(), TInt32)
+  private[this] lazy val newRow: InsertFields = {
     val refs = path.init.scanLeft(Ref("row", childRowType))((struct, name) =>
       Ref(genUID(), tcoerce[TStruct](struct.typ).field(name).typ))
 
     path.zip(refs).zipWithIndex.foldRight[IR](idx) {
       case (((field, ref), i), arg) =>
-        InsertFields(ref, FastIndexedSeq(field ->
+        InsertFields(ref, FastSeq(field ->
           (if (i == refs.length - 1)
             ArrayRef(CastToArray(GetField(ref, field)), arg)
           else
-            Let(refs(i + 1).name, GetField(ref, field), arg))))
+            Let(FastSeq(refs(i + 1).name -> GetField(ref, field)), arg))))
     }.asInstanceOf[InsertFields]
   }
 
-  val typ: TableType = child.typ.copy(rowType = newRow.typ)
+  lazy val typ: TableType = child.typ.copy(rowType = newRow.typ)
 
   def copy(newChildren: IndexedSeq[BaseIR]): TableExplode = {
     assert(newChildren.length == 1)
@@ -2801,15 +2829,23 @@ case class TableExplode(child: TableIR, path: IndexedSeq[String]) extends TableI
   protected[ir] override def execute(ctx: ExecuteContext, r: LoweringAnalyses): TableExecuteIntermediate = {
     val prev = child.execute(ctx, r).asTableValue(ctx)
 
+    val length: IR =
+      Coalesce(FastSeq(
+        ArrayLen(CastToArray(
+          path.foldLeft[IR](Ref("row", childRowType)) { (struct, field) =>
+            GetField(struct, field)
+          })),
+        0))
+
     val (len, l) = Compile[AsmFunction2RegionLongInt](ctx,
-      FastIndexedSeq(("row", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.rvd.rowPType)))),
-      FastIndexedSeq(classInfo[Region], LongInfo), IntInfo,
+      FastSeq(("row", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.rvd.rowPType)))),
+      FastSeq(classInfo[Region], LongInfo), IntInfo,
       length)
     val (Some(PTypeReferenceSingleCodeType(newRowType: PStruct)), f) = Compile[AsmFunction3RegionLongIntLong](
       ctx,
-      FastIndexedSeq(("row", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.rvd.rowPType))),
+      FastSeq(("row", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.rvd.rowPType))),
         (idx.name, SingleCodeEmitParamType(true, Int32SingleCodeType))),
-      FastIndexedSeq(classInfo[Region], LongInfo, IntInfo), LongInfo,
+      FastSeq(classInfo[Region], LongInfo, IntInfo), LongInfo,
       newRow)
     assert(newRowType.virtualType == typ.rowType)
 
@@ -2818,7 +2854,7 @@ case class TableExplode(child: TableIR, path: IndexedSeq[String]) extends TableI
       prev.rvd.typ.key.takeWhile(_ != path.head)
     )
     val fsBc = ctx.fsBc
-    new TableValueIntermediate(
+    TableValueIntermediate(
       TableValue(ctx, typ,
         prev.globals,
         prev.rvd.boundary.mapPartitionsWithIndex(rvdType) { (i, ctx, it) =>
@@ -2846,8 +2882,11 @@ case class TableExplode(child: TableIR, path: IndexedSeq[String]) extends TableI
 
 case class TableUnion(childrenSeq: IndexedSeq[TableIR]) extends TableIR {
   assert(childrenSeq.nonEmpty)
-  assert(childrenSeq.tail.forall(_.typ.rowType == childrenSeq(0).typ.rowType))
-  assert(childrenSeq.tail.forall(_.typ.key == childrenSeq(0).typ.key))
+
+  override def typecheck(): Unit = {
+    assert(childrenSeq.tail.forall(_.typ.rowType == childrenSeq(0).typ.rowType))
+    assert(childrenSeq.tail.forall(_.typ.key == childrenSeq(0).typ.key))
+  }
 
   lazy val rowCountUpperBound: Option[Long] = {
     val definedChildren = childrenSeq.flatMap(_.rowCountUpperBound)
@@ -2861,11 +2900,11 @@ case class TableUnion(childrenSeq: IndexedSeq[TableIR]) extends TableIR {
     TableUnion(newChildren.map(_.asInstanceOf[TableIR]))
   }
 
-  val typ: TableType = childrenSeq(0).typ
+  def typ: TableType = childrenSeq(0).typ
 
   protected[ir] override def execute(ctx: ExecuteContext, r: LoweringAnalyses): TableExecuteIntermediate = {
     val tvs = childrenSeq.map(_.execute(ctx, r).asTableValue(ctx))
-    new TableValueIntermediate(
+    TableValueIntermediate(
       tvs(0).copy(
         rvd = RVD.union(RVD.unify(ctx, tvs.map(_.rvd)), tvs(0).typ.key.length, ctx)))
   }
@@ -2883,7 +2922,7 @@ case class MatrixRowsTable(child: MatrixIR) extends TableIR {
     MatrixRowsTable(newChildren(0).asInstanceOf[MatrixIR])
   }
 
-  val typ: TableType = child.typ.rowsTableType
+  def typ: TableType = child.typ.rowsTableType
 }
 
 case class MatrixColsTable(child: MatrixIR) extends TableIR {
@@ -2896,7 +2935,7 @@ case class MatrixColsTable(child: MatrixIR) extends TableIR {
     MatrixColsTable(newChildren(0).asInstanceOf[MatrixIR])
   }
 
-  val typ: TableType = child.typ.colsTableType
+  def typ: TableType = child.typ.colsTableType
 }
 
 case class MatrixEntriesTable(child: MatrixIR) extends TableIR {
@@ -2909,7 +2948,7 @@ case class MatrixEntriesTable(child: MatrixIR) extends TableIR {
     MatrixEntriesTable(newChildren(0).asInstanceOf[MatrixIR])
   }
 
-  val typ: TableType = child.typ.entriesTableType
+  def typ: TableType = child.typ.entriesTableType
 }
 
 case class TableDistinct(child: TableIR) extends TableIR {
@@ -2922,7 +2961,7 @@ case class TableDistinct(child: TableIR) extends TableIR {
     TableDistinct(newChild.asInstanceOf[TableIR])
   }
 
-  val typ: TableType = child.typ
+  def typ: TableType = child.typ
 
   protected[ir] override def execute(ctx: ExecuteContext, r: LoweringAnalyses): TableExecuteIntermediate = {
     val prev = child.execute(ctx, r).asTableValue(ctx)
@@ -2935,10 +2974,14 @@ case class TableKeyByAndAggregate(
   expr: IR,
   newKey: IR,
   nPartitions: Option[Int] = None,
-  bufferSize: Int) extends TableIR {
-  require(expr.typ.isInstanceOf[TStruct])
-  require(newKey.typ.isInstanceOf[TStruct])
-  require(bufferSize > 0)
+  bufferSize: Int
+) extends TableIR {
+  assert(bufferSize > 0)
+
+  override def typecheck(): Unit = {
+    assert(expr.typ.isInstanceOf[TStruct])
+    assert(newKey.typ.isInstanceOf[TStruct])
+  }
 
   lazy val childrenSeq: IndexedSeq[BaseIR] = Array(child, expr, newKey)
 
@@ -2949,8 +2992,9 @@ case class TableKeyByAndAggregate(
     TableKeyByAndAggregate(newChild, newExpr, newNewKey, nPartitions, bufferSize)
   }
 
-  private val keyType = newKey.typ.asInstanceOf[TStruct]
-  val typ: TableType = TableType(rowType = keyType ++ tcoerce[TStruct](expr.typ),
+  private lazy val keyType = newKey.typ.asInstanceOf[TStruct]
+  lazy val typ: TableType = TableType(
+    rowType = keyType ++ tcoerce[TStruct](expr.typ),
     globalType = child.typ.globalType,
     key = keyType.fieldNames
   )
@@ -2962,10 +3006,10 @@ case class TableKeyByAndAggregate(
 
     val localKeyType = keyType
     val (Some(PTypeReferenceSingleCodeType(localKeyPType: PStruct)), makeKeyF) = ir.Compile[AsmFunction3RegionLongLongLong](ctx,
-      FastIndexedSeq(("row", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.rvd.rowPType))),
+      FastSeq(("row", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.rvd.rowPType))),
         ("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.globals.t)))),
-      FastIndexedSeq(classInfo[Region], LongInfo, LongInfo), LongInfo,
-      Coalesce(FastIndexedSeq(
+      FastSeq(classInfo[Region], LongInfo, LongInfo), LongInfo,
+      Coalesce(FastSeq(
         newKey,
         Die("Internal error: TableKeyByAndAggregate: newKey missing", newKey.typ))))
 
@@ -2978,22 +3022,22 @@ case class TableKeyByAndAggregate(
 
     val (_, makeInit) = ir.CompileWithAggregators[AsmFunction2RegionLongUnit](ctx,
       extracted.states,
-      FastIndexedSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.globals.t)))),
-      FastIndexedSeq(classInfo[Region], LongInfo), UnitInfo,
+      FastSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.globals.t)))),
+      FastSeq(classInfo[Region], LongInfo), UnitInfo,
       extracted.init)
 
     val (_, makeSeq) = ir.CompileWithAggregators[AsmFunction3RegionLongLongUnit](ctx,
       extracted.states,
-      FastIndexedSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.globals.t))),
+      FastSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.globals.t))),
         ("row", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.rvd.rowPType)))),
-      FastIndexedSeq(classInfo[Region], LongInfo, LongInfo), UnitInfo,
+      FastSeq(classInfo[Region], LongInfo, LongInfo), UnitInfo,
       extracted.seqPerElt)
 
     val (Some(PTypeReferenceSingleCodeType(rTyp: PStruct)), makeAnnotate) = ir.CompileWithAggregators[AsmFunction2RegionLongLong](ctx,
       extracted.states,
-      FastIndexedSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.globals.t)))),
-      FastIndexedSeq(classInfo[Region], LongInfo), LongInfo,
-      Let(res, extracted.results, extracted.postAggIR))
+      FastSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.globals.t)))),
+      FastSeq(classInfo[Region], LongInfo), LongInfo,
+      Let(FastSeq(res -> extracted.results), extracted.postAggIR))
     assert(rTyp.virtualType == typ.valueType, s"$rTyp, ${ typ.valueType }")
 
     val serialize = extracted.serialize(ctx, spec)
@@ -3096,7 +3140,9 @@ case class TableKeyByAndAggregate(
 
 // follows key_by non-empty key
 case class TableAggregateByKey(child: TableIR, expr: IR) extends TableIR {
-  require(child.typ.key.nonEmpty)
+  override def typecheck(): Unit = {
+    assert(child.typ.key.nonEmpty)
+  }
 
   lazy val rowCountUpperBound: Option[Long] = child.rowCountUpperBound
 
@@ -3108,7 +3154,7 @@ case class TableAggregateByKey(child: TableIR, expr: IR) extends TableIR {
     TableAggregateByKey(newChild, newExpr)
   }
 
-  val typ: TableType = child.typ.copy(rowType = child.typ.keyType ++ tcoerce[TStruct](expr.typ))
+  lazy val typ: TableType = child.typ.copy(rowType = child.typ.keyType ++ tcoerce[TStruct](expr.typ))
 
   protected[ir] override def execute(ctx: ExecuteContext, r: LoweringAnalyses): TableExecuteIntermediate = {
     val prev = child.execute(ctx, r).asTableValue(ctx)
@@ -3121,28 +3167,28 @@ case class TableAggregateByKey(child: TableIR, expr: IR) extends TableIR {
 
     val (_, makeInit) = ir.CompileWithAggregators[AsmFunction2RegionLongUnit](ctx,
       extracted.states,
-      FastIndexedSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.globals.t)))),
-      FastIndexedSeq(classInfo[Region], LongInfo), UnitInfo,
+      FastSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.globals.t)))),
+      FastSeq(classInfo[Region], LongInfo), UnitInfo,
       extracted.init)
 
     val (_, makeSeq) = ir.CompileWithAggregators[AsmFunction3RegionLongLongUnit](ctx,
       extracted.states,
-      FastIndexedSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.globals.t))),
+      FastSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.globals.t))),
         ("row", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prevRVD.rowPType)))),
-      FastIndexedSeq(classInfo[Region], LongInfo, LongInfo), UnitInfo,
+      FastSeq(classInfo[Region], LongInfo, LongInfo), UnitInfo,
       extracted.seqPerElt)
 
-    val valueIR = Let(res, extracted.results, extracted.postAggIR)
+    val valueIR = Let(FastSeq(res -> extracted.results), extracted.postAggIR)
     val keyType = prevRVD.typ.kType
 
     val key = Ref(genUID(), keyType.virtualType)
     val value = Ref(genUID(), valueIR.typ)
     val (Some(PTypeReferenceSingleCodeType(rowType: PStruct)), makeRow) = ir.CompileWithAggregators[AsmFunction3RegionLongLongLong](ctx,
       extracted.states,
-      FastIndexedSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.globals.t))),
+      FastSeq(("global", SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(prev.globals.t))),
         (key.name, SingleCodeEmitParamType(true, PTypeReferenceSingleCodeType(keyType)))),
-      FastIndexedSeq(classInfo[Region], LongInfo, LongInfo), LongInfo,
-      Let(value.name, valueIR,
+      FastSeq(classInfo[Region], LongInfo, LongInfo), LongInfo,
+      Let(FastSeq(value.name -> valueIR),
         InsertFields(key, typ.valueType.fieldNames.map(n => n -> GetField(value, n)))))
 
     assert(rowType.virtualType == typ.rowType, s"$rowType, ${ typ.rowType }")
@@ -3231,14 +3277,14 @@ case class TableOrderBy(child: TableIR, sortFields: IndexedSeq[SortField]) exten
 
   lazy val rowCountUpperBound: Option[Long] = child.rowCountUpperBound
 
-  val childrenSeq: IndexedSeq[BaseIR] = FastIndexedSeq(child)
+  val childrenSeq: IndexedSeq[BaseIR] = FastSeq(child)
 
   def copy(newChildren: IndexedSeq[BaseIR]): TableOrderBy = {
     val IndexedSeq(newChild) = newChildren
     TableOrderBy(newChild.asInstanceOf[TableIR], sortFields)
   }
 
-  val typ: TableType = child.typ.copy(key = FastIndexedSeq())
+  lazy val typ: TableType = child.typ.copy(key = FastSeq())
 
   protected[ir] override def execute(ctx: ExecuteContext, r: LoweringAnalyses): TableExecuteIntermediate = {
     val prev = child.execute(ctx, r).asTableValue(ctx)
@@ -3280,7 +3326,7 @@ case class CastMatrixToTable(
 
   lazy val typ: TableType = child.typ.toTableType(entriesFieldName, colsFieldName)
 
-  lazy val childrenSeq: IndexedSeq[BaseIR] = FastIndexedSeq(child)
+  lazy val childrenSeq: IndexedSeq[BaseIR] = FastSeq(child)
 
   def copy(newChildren: IndexedSeq[BaseIR]): CastMatrixToTable = {
     val IndexedSeq(newChild) = newChildren
@@ -3291,14 +3337,14 @@ case class CastMatrixToTable(
 }
 
 case class TableRename(child: TableIR, rowMap: Map[String, String], globalMap: Map[String, String]) extends TableIR {
-  require(rowMap.keys.forall(child.typ.rowType.hasField))
-  require(globalMap.keys.forall(child.typ.globalType.hasField))
+  override def typecheck(): Unit = {
+    assert(rowMap.keys.forall(child.typ.rowType.hasField))
+    assert(globalMap.keys.forall(child.typ.globalType.hasField))
+  }
 
   lazy val rowCountUpperBound: Option[Long] = child.rowCountUpperBound
 
   def rowF(old: String): String = rowMap.getOrElse(old, old)
-
-  def globalF(old: String): String = globalMap.getOrElse(old, old)
 
   lazy val typ: TableType = child.typ.copy(
     rowType = child.typ.rowType.rename(rowMap),
@@ -3308,7 +3354,7 @@ case class TableRename(child: TableIR, rowMap: Map[String, String], globalMap: M
 
   override def partitionCounts: Option[IndexedSeq[Long]] = child.partitionCounts
 
-  lazy val childrenSeq: IndexedSeq[BaseIR] = FastIndexedSeq(child)
+  lazy val childrenSeq: IndexedSeq[BaseIR] = FastSeq(child)
 
   def copy(newChildren: IndexedSeq[BaseIR]): TableRename = {
     val IndexedSeq(newChild: TableIR) = newChildren
@@ -3316,7 +3362,7 @@ case class TableRename(child: TableIR, rowMap: Map[String, String], globalMap: M
   }
 
   protected[ir] override def execute(ctx: ExecuteContext, r: LoweringAnalyses): TableExecuteIntermediate =
-    new TableValueIntermediate(
+    TableValueIntermediate(
       child.execute(ctx, r).asTableValue(ctx).rename(globalMap, rowMap))
 }
 
@@ -3330,7 +3376,7 @@ case class TableFilterIntervals(child: TableIR, intervals: IndexedSeq[Interval],
     TableFilterIntervals(newChild, intervals, keep)
   }
 
-  override lazy val typ: TableType = child.typ
+  override def typ: TableType = child.typ
 
   protected[ir] override def execute(ctx: ExecuteContext, r: LoweringAnalyses): TableExecuteIntermediate = {
     val tv = child.execute(ctx, r).asTableValue(ctx)
@@ -3383,7 +3429,8 @@ case class TableToTableApply(child: TableIR, function: TableToTableFunction) ext
 case class BlockMatrixToTableApply(
   bm: BlockMatrixIR,
   aux: IR,
-  function: BlockMatrixToTableFunction) extends TableIR {
+  function: BlockMatrixToTableFunction
+) extends TableIR {
 
   override lazy val childrenSeq: IndexedSeq[BaseIR] = Array(bm, aux)
 
@@ -3420,7 +3467,7 @@ case class BlockMatrixToTable(child: BlockMatrixIR) extends TableIR {
   }
 
   protected[ir] override def execute(ctx: ExecuteContext, r: LoweringAnalyses): TableExecuteIntermediate = {
-    new TableValueIntermediate(child.execute(ctx).entriesTable(ctx))
+    TableValueIntermediate(child.execute(ctx).entriesTable(ctx))
   }
 }
 

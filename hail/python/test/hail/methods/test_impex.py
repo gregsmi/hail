@@ -320,6 +320,34 @@ class VCFTests(unittest.TestCase):
         hl.export_vcf(mt.rows(), tmp)
         assert hl.import_vcf(tmp)._same(mt)
 
+    def test_export_vcf_invalid_info_types(self):
+        ds = hl.import_vcf(resource("sample.vcf"))
+        ds = ds.annotate_rows(
+            info=ds.info.annotate(arr_bool=hl.missing(hl.tarray(hl.tbool)),
+                                  arr_arr_i32=hl.missing(hl.tarray(hl.tarray(hl.tint32)))))
+        with pytest.raises(FatalError) as exp, \
+                TemporaryFilename(suffix='.vcf') as export_path:
+            hl.export_vcf(ds, export_path)
+        msg = '''VCF does not support the type(s) for the following INFO field(s):
+\t'arr_bool': 'array<bool>'.
+\t'arr_arr_i32': 'array<array<int32>>'.
+'''
+        assert msg in str(exp.value)
+
+    def test_export_vcf_invalid_format_types(self):
+        ds = hl.import_vcf(resource("sample.vcf"))
+        ds = ds.annotate_entries(
+            boolean=hl.missing(hl.tbool),
+            arr_arr_i32=hl.missing(hl.tarray(hl.tarray(hl.tint32))))
+        with pytest.raises(FatalError) as exp, \
+                TemporaryFilename(suffix='.vcf') as export_path:
+            hl.export_vcf(ds, export_path)
+        msg = '''VCF does not support the type(s) for the following FORMAT field(s):
+\t'boolean': 'bool'.
+\t'arr_arr_i32': 'array<array<int32>>'.
+'''
+        assert msg in str(exp.value)
+
     def import_gvcfs_sample_vcf(self, path):
         parts_type = hl.tarray(hl.tinterval(hl.tstruct(locus=hl.tlocus('GRCh37'))))
         parts = [
@@ -445,8 +473,8 @@ class VCFTests(unittest.TestCase):
         vds.reference_data._force_count_rows()
         vds.variant_data._force_count_rows()
 
-    def test_combiner_parse_as_annotations(self):
-        from hail.vds.combiner.combine import parse_as_fields
+    def test_combiner_parse_allele_specific_annotations(self):
+        from hail.vds.combiner.combine import parse_allele_specific_fields
         infos = hl.array([
             hl.struct(
                 AS_QUALapprox="|1171|",
@@ -463,7 +491,7 @@ class VCFTests(unittest.TestCase):
                 AS_RAW_MQRankSum="|NaN|NaN",
                 AS_RAW_ReadPosRankSum="|NaN|NaN")])
 
-        output = hl.eval(infos.map(lambda info: parse_as_fields(info, False)))
+        output = hl.eval(infos.map(lambda info: parse_allele_specific_fields(info, False)))
         expected = [
             hl.Struct(
                 AS_QUALapprox=[None, 1171, None],
